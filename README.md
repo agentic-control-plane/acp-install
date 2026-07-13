@@ -30,7 +30,7 @@ The installer is **idempotent**: running it again upgrades existing entries in p
 
 ## Trust signals
 
-- **Source**: this file — read it top-to-bottom, ~420 lines
+- **Source**: this file — read it top-to-bottom, ~660 lines
 - **SHA-256**: [`https://agenticcontrolplane.com/install.sh.sha256`](https://agenticcontrolplane.com/install.sh.sha256) — auto-updates on every Agentic Control Plane release
 - **License**: MIT
 - **Dry read**: `curl -sf https://agenticcontrolplane.com/install.sh | less`
@@ -71,3 +71,5 @@ A one-line `uninstall.sh` is planned. Until then, the blocks above are small eno
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Not a coding-agent CLI? Framework agents use [acp-governance-sdks](https://github.com/agentic-control-plane/acp-governance-sdks); Hermes Agent uses [hermes-acp-plugin](https://github.com/agentic-control-plane/hermes-acp-plugin) (`pip install hermes-acp`).

@@ -1,0 +1,21 @@
+name: Mirror drift check
+# This repo's entire purpose is being the auditable mirror of the live
+# installer. Fail loudly whenever the served script diverges from the repo.
+on:
+  push: { branches: [main] }
+  schedule: [{ cron: "23 6 * * *" }]
+  workflow_dispatch: {}
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare repo install.sh to the live script
+        run: |
+          curl -sf https://agenticcontrolplane.com/install.sh -o /tmp/live.sh
+          if ! diff -q install.sh /tmp/live.sh; then
+            echo "::error::install.sh in this repo differs from the live script — the 'auditable mirror' claim is false. Sync them."
+            diff install.sh /tmp/live.sh | head -40
+            exit 1
+          fi
+          echo "mirror in sync ($(wc -l < install.sh) lines)"
