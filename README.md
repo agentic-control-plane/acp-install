@@ -10,6 +10,8 @@ curl -sf https://agenticcontrolplane.com/install.sh | bash
 
 Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
 
+Want the long version first? [Every file the installer writes, in plain language](https://agenticcontrolplane.com/install-explained) · [getting started](https://agenticcontrolplane.com/getting-started) · per-client guides for [Claude Code](https://agenticcontrolplane.com/integrations/claude-code) and [Codex CLI](https://agenticcontrolplane.com/integrations/codex)
+
 ## What the installer does
 
 For whichever AI clients it detects:
