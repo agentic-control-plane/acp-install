@@ -47,6 +47,12 @@ DASHBOARD_BASE="${ACP_DASHBOARD_BASE:-https://cloud.agenticcontrolplane.com}"
 CONFIG_DIR="$HOME/.acp"
 CREDS_FILE="$CONFIG_DIR/credentials"
 
+# ── Local mode: no account, no cloud, nothing leaves your machine ──────
+# Enable with:  curl -sf …/install.sh | bash -s -- --local   (or ACP_LOCAL=1)
+LOCAL_MODE=false
+for _a in "$@"; do case "$_a" in --local|--no-login) LOCAL_MODE=true ;; esac; done
+[ "${ACP_LOCAL:-}" = "1" ] && LOCAL_MODE=true
+
 # ── Terminal colors ───────────────────────────────────────────────────
 # tput-guarded: green success / red failure / dim secondary, mirroring
 # the console's ALLOW/DENY language. Degrades to plain text when stdout
@@ -124,7 +130,7 @@ mkdir -p "$CONFIG_DIR"
 echo "  [ACP] Installing governance hook script..."
 cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
 #!/usr/bin/env node
-import { readFileSync } from "fs";
+import { readFileSync, existsSync, appendFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -142,12 +148,46 @@ function readToken() {
   catch { return null; }
 }
 
+const ACP_DIR = join(homedir(), ".acp");
 const token = readToken();
-if (!token) process.exit(0);
+// LOCAL mode: no account, no cloud. Active when there's no token AND either a
+// local policy exists or ACP_LOCAL=1. Decisions are made on-device by
+// decide.mjs against ~/.acp/policy.json; calls are logged to ~/.acp/audit.jsonl.
+const LOCAL = !token && (process.env.ACP_LOCAL === "1" || existsSync(join(ACP_DIR, "policy.json")));
+if (!token && !LOCAL) process.exit(0);
 
 let input;
 try { input = JSON.parse(readFileSync("/dev/stdin", "utf8")); }
 catch { process.exit(0); }
+
+if (LOCAL) { await runLocal(input); process.exit(0); }
+
+async function runLocal(input) {
+  const audit = (obj) => { try { appendFileSync(join(ACP_DIR, "audit.jsonl"), JSON.stringify(obj) + "\n"); } catch {} };
+  const ev = typeof input.hook_event_name === "string" ? input.hook_event_name : "PreToolUse";
+  if (ev === "PostToolUse") {
+    audit({ ts: new Date().toISOString(), event: "post", client: ACP_CLIENT, tool: input.tool_name });
+    return;
+  }
+  let policy = { default: "allow", rules: {} };
+  try { policy = JSON.parse(readFileSync(join(ACP_DIR, "policy.json"), "utf8")); } catch {}
+  let decide;
+  try { ({ decide } = await import("./decide.mjs")); } catch { return; } // no engine → never brick
+  const d = decide(input.tool_name, input.tool_input, policy);
+  audit({ ts: new Date().toISOString(), event: "pre", client: ACP_CLIENT, tool: input.tool_name,
+          classified: d.classified, decision: d.decision, source: d.source, reason: d.reason });
+  if (d.decision === "deny") {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `[ACP] ${d.reason}` },
+      systemMessage: `[ACP·local] Blocked: ${d.reason}`,
+    }));
+  } else if (d.decision === "ask") {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: `[ACP] ${d.reason}` },
+    }));
+  }
+  // allow → no output (silent allow, still logged to audit.jsonl)
+}
 
 const headers = {
   Authorization: `Bearer ${token}`,
@@ -265,6 +305,94 @@ if (hookEvent === "PostToolUse") handlePostToolUse();
 else handlePreToolUse();
 GOVERN
 chmod +x "$CONFIG_DIR/govern.mjs"
+
+# ── Shared: write decide.mjs (LOCAL decision engine — no cloud, no login) ──
+# Mirrors decide.mjs in the repo verbatim. Pure, self-contained; govern.mjs
+# imports it only in LOCAL mode.
+cat > "$CONFIG_DIR/decide.mjs" << 'DECIDE'
+// decide.mjs — LOCAL decision engine for Agentic Control Plane.
+// Pure, self-contained (no imports, no I/O). Classifies a tool call, applies a
+// safety floor, and consults ~/.acp/policy.json. Same shape of decision the
+// hosted gateway makes; the hosted product adds the tuned classifier,
+// cross-instance limits, team policy, cost X-ray, and the console.
+
+function shellTokens(cmd) {
+  const out = []; let buf = ""; let quote = null;
+  for (const ch of String(cmd)) {
+    if (quote) { if (ch === quote) quote = null; else buf += ch; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === " " || ch === "\t" || ch === "\n") { if (buf) { out.push(buf); buf = ""; } continue; }
+    if (ch === "|" || ch === ";" || ch === "&") { if (buf) { out.push(buf); buf = ""; } break; }
+    buf += ch;
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+const WRAPPERS = new Set(["sudo", "env", "nice", "nohup", "stdbuf", "timeout", "time", "xargs", "command"]);
+function canonicalBinary(cmd) {
+  const toks = shellTokens(cmd); let i = 0;
+  while (i < toks.length) {
+    const t = toks[i];
+    if (t.includes("=") && !t.startsWith("-")) { i++; continue; }
+    if (WRAPPERS.has(t)) { i++; while (i < toks.length && toks[i].startsWith("-")) i++; continue; }
+    return t.split("/").pop();
+  }
+  return "";
+}
+function firstHost(cmd) {
+  const m = String(cmd).match(/https?:\/\/([^/\s"']+)/i);
+  return m ? m[1].replace(/^www\./, "").toLowerCase() : undefined;
+}
+function safeParse(s) { try { return JSON.parse(s); } catch { return {}; } }
+export function classifyTool(toolName, toolInput) {
+  const name = String(toolName || "");
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+  if (name === "Bash" || name === "run_terminal_cmd" || name === "shell") {
+    const cmd = input.command || input.cmd || "";
+    const bin = canonicalBinary(cmd);
+    if (!bin) return "Bash";
+    if (bin === "curl" || bin === "wget") { const h = firstHost(cmd); return h ? `Bash.curl.${h}` : "Bash.curl"; }
+    return `Bash.${bin}`;
+  }
+  if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "create_file" || name === "edit_file") return "Write";
+  if (name === "Read" || name === "read_file" || name === "Glob" || name === "Grep" || name === "LS") return "Read";
+  if (name === "WebFetch" || name === "WebSearch" || name === "web_search") { const h = firstHost(input.url || ""); return h ? `WebFetch.${h}` : "WebFetch"; }
+  return name;
+}
+export function hardlineFloor(toolName, toolInput) {
+  const name = String(toolName || "");
+  if (name !== "Bash" && name !== "run_terminal_cmd" && name !== "shell") return null;
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+  const c = String(input.command || input.cmd || "").replace(/\s+/g, " ").trim();
+  const RULES = [
+    [/\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b[^|;&]*\s(\/|~|\$HOME|\/\*|\.)(\s|$)/i, "recursive force-delete of a root/home path"],
+    [/\bmkfs\.[a-z0-9]+\b|\bmkfs\s/i, "filesystem format (mkfs)"],
+    [/\bdd\b[^|;&]*\bof=\/dev\/(sd|nvme|disk|hd)/i, "raw disk overwrite (dd of=/dev/…)"],
+    [/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, "fork bomb"],
+    [/\bchmod\s+-R\s+0*777\s+\/(\s|$)/i, "recursive chmod 777 on /"],
+    [/>\s*\/dev\/(sd|nvme|disk|hd)[a-z0-9]*/i, "redirect over a raw disk device"],
+    [/\bgit\s+push\b[^|;&]*--force[^|;&]*\b(origin\s+)?(main|master)\b/i, "force-push to main/master"],
+  ];
+  for (const [re, why] of RULES) if (re.test(c)) return why;
+  return null;
+}
+export function candidates(key) {
+  const parts = String(key).split("."); const out = [];
+  for (let i = parts.length; i >= 1; i--) out.push(parts.slice(0, i).join("."));
+  return out;
+}
+const VALID = new Set(["allow", "ask", "deny"]);
+export function decide(toolName, toolInput, policy) {
+  const floor = hardlineFloor(toolName, toolInput);
+  if (floor) return { decision: "deny", reason: floor, source: "hardline", classified: classifyTool(toolName, toolInput) };
+  const key = classifyTool(toolName, toolInput);
+  const rules = (policy && policy.rules) || {};
+  for (const cand of candidates(key)) { const r = rules[cand]; if (VALID.has(r)) return { decision: r, reason: `local policy: ${cand} → ${r}`, source: "policy", classified: key }; }
+  const def = VALID.has(policy && policy.default) ? policy.default : "allow";
+  return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key };
+}
+DECIDE
+chmod +x "$CONFIG_DIR/decide.mjs"
 
 # ── Step 1a: Claude Code setup ────────────────────────────────────────
 
@@ -548,6 +676,41 @@ if [ "$HAS_OPENCLAW" = true ]; then
   } || {
     echo "  ${C_RED}✗${C_RESET} [OpenClaw] Plugin install failed — try: openclaw plugins install @gatewaystack/acp-governance"
   }
+fi
+
+# ── Local mode: skip login, seed a default policy, done ───────────────
+if [ "$LOCAL_MODE" = true ]; then
+  if [ ! -f "$CONFIG_DIR/policy.json" ]; then
+    cat > "$CONFIG_DIR/policy.json" << 'POLICY'
+{
+  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs, force-push to main) always denies regardless of this file. 'default' applies when no rule matches.",
+  "default": "allow",
+  "rules": {
+    "Bash.rm": "ask",
+    "Bash.curl": "ask",
+    "Bash.git.push": "ask",
+    "Bash.chmod": "ask",
+    "Bash.chown": "ask"
+  }
+}
+POLICY
+  fi
+  echo ""
+  echo "  ${C_GREEN}ALLOW${C_RESET}  local mode active — no account, nothing leaves your machine"
+  echo "  ${C_DIM}Hooks installed for:${C_RESET} $INSTALLED"
+  echo ""
+  echo "  Decisions run on-device from ${C_DIM}~/.acp/policy.json${C_RESET} (edit it — allow / ask / deny)."
+  echo "  Every call is logged to ${C_DIM}~/.acp/audit.jsonl${C_RESET}:"
+  echo "    ${C_DIM}tail -f ~/.acp/audit.jsonl${C_RESET}"
+  echo ""
+  echo "  The safety floor always blocks the catastrophic (rm -rf /, mkfs, dd, fork bombs,"
+  echo "  force-push to main) regardless of policy."
+  echo ""
+  echo "  Restart your AI client to activate the hook."
+  echo "  Want team control, cost X-ray, and a shared console across everyone's agents?"
+  echo "  Re-run without ${C_DIM}--local${C_RESET} to connect a workspace."
+  echo ""
+  exit 0
 fi
 
 # ── Step 2: Authenticate ──────────────────────────────────────────────
