@@ -10,6 +10,20 @@ curl -sf https://agenticcontrolplane.com/install.sh | bash
 
 Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
 
+### Local mode — no account, nothing leaves your machine
+
+```bash
+curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --local
+```
+
+Governs your agents **entirely on-device**. No signup, no key, no phone-home. Decisions run from `~/.acp/policy.json` (`allow` / `ask` / `deny` per tool), a **safety floor** blocks the catastrophic (`rm -rf /`, `mkfs`, `dd` of a disk, fork bombs, force-push to `main`) regardless of policy, and every call is logged locally — see what your agent actually did:
+
+```bash
+tail -f ~/.acp/audit.jsonl
+```
+
+The same one command works across Claude Code, Cursor, and Codex. Want team control, cost X-ray, and a shared console across **everyone's** agents at the org level? Re-run without `--local` to connect a workspace — the local runtime is the free individual on-ramp; the cloud is the team upgrade.
+
 Want the long version first? [Every file the installer writes, in plain language](https://agenticcontrolplane.com/install-explained) · [getting started](https://agenticcontrolplane.com/getting-started) · per-client guides for [Claude Code](https://agenticcontrolplane.com/integrations/claude-code) and [Codex CLI](https://agenticcontrolplane.com/integrations/codex)
 
 ## What the installer does
@@ -44,7 +58,7 @@ The canonical install URL is `agenticcontrolplane.com/install.sh` (served from t
 
 - Run any non-interactive commands without prompting if creds already exist (it asks "Reconfigure? (y/N)")
 - Install to directories you don't own (`$HOME/.acp/`, `$HOME/.codex/`, `$HOME/.claude/`, `$HOME/.cursor/` only)
-- Phone home to any server other than `api.agenticcontrolplane.com` and (during auth) `cloud.agenticcontrolplane.com`
+- Phone home to any server other than `api.agenticcontrolplane.com` and (during auth) `cloud.agenticcontrolplane.com` — **and in `--local` mode, nothing leaves your machine at all** (decisions run on-device from `~/.acp/decide.mjs` + `~/.acp/policy.json`; no network calls)
 - Modify anything outside the client config files documented above
 - Install binaries or compile anything — it's a pure shell + Node.js script
 
