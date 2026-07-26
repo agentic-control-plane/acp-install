@@ -75,6 +75,7 @@ HAS_CLAUDE=false
 HAS_CURSOR=false
 HAS_CODEX=false
 HAS_OPENCLAW=false
+HAS_OPENCODE=false
 INSTALLED=""
 
 if [ -d "$HOME/.claude" ] || command -v claude &> /dev/null; then
@@ -93,9 +94,73 @@ if command -v openclaw &> /dev/null; then
   HAS_OPENCLAW=true
 fi
 
-if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ]; then
+# Hermes Agent — governed via its native pip plugin. One front door: this
+# installer performs the plugin install itself (David 2026-07-21: fold every
+# harness into the one-liner). Fail-open: any step failing degrades to
+# printing the manual commands, never a broken half-install.
+HAS_HERMES=false
+if command -v hermes &> /dev/null; then
+  HAS_HERMES=true
+fi
+# Cloud-only: hermes-acp governs via a workspace token (without one it passes
+# through), so --local skips the plugin install rather than wiring a no-op.
+if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Hermes detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Hermes Agent — installing the ACP plugin…"
+  HERMES_PLUGIN_OK=false
+  # If hermes lives in a pipx venv, the plugin must be injected there —
+  # a bare pip install lands in the wrong environment.
+  if command -v pipx &> /dev/null && pipx list 2>/dev/null | grep -qi "package hermes"; then
+    pipx inject hermes hermes-acp --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+  fi
+  # Otherwise install with the same interpreter that runs hermes (shebang),
+  # falling back to plain pip. PEP 668 boxes will refuse — that's the
+  # fail-open path below, not something to --break-system-packages through.
+  if [ "$HERMES_PLUGIN_OK" = false ]; then
+    HERMES_BIN="$(command -v hermes)"
+    HERMES_PY="$(head -1 "$HERMES_BIN" 2>/dev/null | sed -n 's/^#!//p')"
+    if [ -n "$HERMES_PY" ] && [ -x "$HERMES_PY" ]; then
+      "$HERMES_PY" -m pip install --upgrade hermes-acp >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+    fi
+  fi
+  if [ "$HERMES_PLUGIN_OK" = false ]; then
+    pip install --upgrade hermes-acp >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+  fi
+  if [ "$HERMES_PLUGIN_OK" = true ] && hermes plugins enable acp >/dev/null 2>&1; then
+    echo "  ${C_GREEN}✓ Hermes governed${C_RESET} — next: acp-hermes login   (headless box: set ACP_BEARER_TOKEN instead)"
+  else
+    echo "  Couldn't install automatically (often a PEP 668 managed environment)."
+    echo "  Run it in your Python env of choice:"
+    echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
+  fi
+  echo ""
+fi
+
+# opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
+if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
+  HAS_OPENCODE=true
+fi
+
+if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ]; then
+  # Hermes-only box: the plugin path above already handled it — success, not
+  # "nothing detected".
+  if [ "$HAS_HERMES" = true ]; then
+    if [ "$LOCAL_MODE" = true ]; then
+      echo "  Hermes was the only client found — local mode doesn't govern Hermes yet; re-run without --local."
+    else
+      echo "  Hermes was the only client found — you're done here."
+    fi
+    exit 0
+  fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode"
+  echo "  Hermes Agent? It has a native pip plugin instead:"
+  echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
+  echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
   echo ""
   echo "  Install one first, then re-run this script."
   exit 1
@@ -112,6 +177,9 @@ fi
 if [ "$HAS_OPENCLAW" = true ]; then
   if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + OpenClaw"; else TARGETS="OpenClaw"; fi
 fi
+if [ "$HAS_OPENCODE" = true ]; then
+  if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + opencode"; else TARGETS="opencode"; fi
+fi
 
 echo ""
 echo "  Agentic Control Plane"
@@ -122,13 +190,23 @@ echo ""
 mkdir -p "$CONFIG_DIR"
 
 # ── Shared: write govern.mjs ──────────────────────────────────────────
-# Single dispatcher script used by every client (Claude Code, Cursor,
-# Codex). v0.4 dispatches PreToolUse and PostToolUse to the correct
-# backend endpoint. PostToolUse is audit-only client-side in v0.4: it
-# never modifies tool output but surfaces findings in the ACP dashboard.
+# Single dispatcher script used by non-plugin clients (Cursor, Codex,
+# opencode) and as the Claude Code fallback. The CANONICAL copy lives in
+# the plugin repo (bin/govern.mjs — scoped-token exchange + the govern.*
+# control-plane endpoint); fetch it so hook fixes reach these harnesses
+# without an installer release. The inline copy below is the offline
+# fallback only.
 
 echo "  [ACP] Installing governance hook script..."
-cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
+GOVERN_RAW_URL="https://raw.githubusercontent.com/agentic-control-plane/claude-code-acp-plugin/main/bin/govern.mjs"
+if curl -sf --max-time 10 "$GOVERN_RAW_URL" -o "$CONFIG_DIR/govern.mjs.tmp" 2>/dev/null \
+   && head -1 "$CONFIG_DIR/govern.mjs.tmp" | grep -q "node"; then
+  mv "$CONFIG_DIR/govern.mjs.tmp" "$CONFIG_DIR/govern.mjs"
+  GOVERN_SOURCE="canonical (plugin repo)"
+else
+  rm -f "$CONFIG_DIR/govern.mjs.tmp"
+  GOVERN_SOURCE="bundled fallback"
+  cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
 #!/usr/bin/env node
 import { readFileSync, existsSync, appendFileSync } from "fs";
 import { homedir } from "os";
@@ -321,7 +399,9 @@ const hookEvent = typeof input.hook_event_name === "string" ? input.hook_event_n
 if (hookEvent === "PostToolUse") handlePostToolUse();
 else handlePreToolUse();
 GOVERN
+fi
 chmod +x "$CONFIG_DIR/govern.mjs"
+echo "  ${C_GREEN}✓${C_RESET} [ACP] Governance hook installed ($GOVERN_SOURCE)"
 
 # ── Shared: write decide.mjs (LOCAL decision engine — no cloud, no login) ──
 # Mirrors decide.mjs in the repo verbatim. Pure, self-contained; govern.mjs
@@ -601,38 +681,96 @@ chmod +x "$CONFIG_DIR/decide.mjs"
 # ── Step 1a: Claude Code setup ────────────────────────────────────────
 
 if [ "$HAS_CLAUDE" = true ]; then
-  echo "  [Claude Code] Setting up governance hooks..."
+  echo "  [Claude Code] Setting up governance..."
 
-  # Register Pre- and Post-ToolUse hooks in settings.json. Idempotent:
-  # adds a govern.mjs entry to each event's hooks array only if missing.
-  # Preserves any other hooks the user has configured.
+  # ── Preferred path (#295): install the PLUGIN. It carries the hooks,
+  #    the /cost-xray + /acp skills, AND the bundled ACP MCP server, with
+  #    marketplace version tracking — users actually receive updates.
+  #    Falls back to direct hook wiring on older Claude Code CLIs.
+  CLAUDE_PLUGIN_OK=false
+  if claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin >/dev/null 2>&1 \
+     || claude plugin marketplace update acp >/dev/null 2>&1; then
+    claude plugin install agentic-control-plane@acp >/dev/null 2>&1 || true
+    if claude plugin list 2>/dev/null | grep -q "agentic-control-plane"; then
+      CLAUDE_PLUGIN_OK=true
+    fi
+  fi
+
   CLAUDE_SETTINGS="$HOME/.claude/settings.json"
   mkdir -p "$HOME/.claude"
   if [ ! -f "$CLAUDE_SETTINGS" ]; then
     echo '{}' > "$CLAUDE_SETTINGS"
   fi
-  node -e "
-    const fs = require('fs');
-    const p = process.argv[1];
-    let s = {};
-    try { s = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
-    s.hooks = s.hooks || {};
-    const hookEntry = {
-      matcher: '.*',
-      hooks: [{ type: 'command', command: 'env ACP_CLIENT=claude-code-plugin node \$HOME/.acp/govern.mjs', timeout: 5 }]
-    };
-    function isGovernEntry(e) {
-      return Array.isArray(e.hooks) && e.hooks.some(h => typeof h.command === 'string' && h.command.includes('govern.mjs'));
-    }
-    // Upgrade-safe: remove any existing govern.mjs entry (stale or current),
-    // then add the current one. Preserves any other hooks the user has.
-    for (const ev of ['PreToolUse', 'PostToolUse']) {
-      s.hooks[ev] = (Array.isArray(s.hooks[ev]) ? s.hooks[ev] : []).filter(e => !isGovernEntry(e));
-      s.hooks[ev].push(hookEntry);
-    }
-    fs.writeFileSync(p, JSON.stringify(s, null, 2));
-  " "$CLAUDE_SETTINGS"
-  echo "  ${C_GREEN}✓${C_RESET} [Claude Code] PreToolUse + PostToolUse hooks registered"
+
+  if [ "$CLAUDE_PLUGIN_OK" = true ]; then
+    # The plugin's hooks.json now governs — REMOVE any direct govern.mjs
+    # entries a previous installer wrote, or every tool call is governed
+    # (and logged) twice. Preserves all non-ACP hooks.
+    node -e "
+      const fs = require('fs');
+      const p = process.argv[1];
+      let s = {};
+      try { s = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+      if (s.hooks) {
+        const isGovernEntry = (e) =>
+          Array.isArray(e.hooks) && e.hooks.some(h => typeof h.command === 'string' && h.command.includes('govern.mjs'));
+        for (const ev of ['PreToolUse', 'PostToolUse']) {
+          if (Array.isArray(s.hooks[ev])) s.hooks[ev] = s.hooks[ev].filter(e => !isGovernEntry(e));
+        }
+      }
+      fs.writeFileSync(p, JSON.stringify(s, null, 2));
+    " "$CLAUDE_SETTINGS"
+    # The plugin bundles the ACP MCP server — drop the legacy user-scope
+    # registration so the tools don't appear twice.
+    CLAUDE_JSON="$HOME/.claude.json"
+    if [ -f "$CLAUDE_JSON" ]; then
+      node -e "
+        const fs = require('fs');
+        const p = process.argv[1];
+        let c = {};
+        try { c = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+        if (c.mcpServers && c.mcpServers.acp) { delete c.mcpServers.acp; fs.writeFileSync(p, JSON.stringify(c, null, 2)); }
+      " "$CLAUDE_JSON"
+    fi
+    echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin installed (hooks + skills + MCP, auto-updating)"
+  else
+    # Fallback for Claude Code CLIs without plugin-marketplace support:
+    # direct hook wiring + user-scope MCP, exactly as before.
+    node -e "
+      const fs = require('fs');
+      const p = process.argv[1];
+      let s = {};
+      try { s = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+      s.hooks = s.hooks || {};
+      const hookEntry = {
+        matcher: '.*',
+        hooks: [{ type: 'command', command: 'env ACP_CLIENT=claude-code-plugin node \$HOME/.acp/govern.mjs', timeout: 5 }]
+      };
+      function isGovernEntry(e) {
+        return Array.isArray(e.hooks) && e.hooks.some(h => typeof h.command === 'string' && h.command.includes('govern.mjs'));
+      }
+      for (const ev of ['PreToolUse', 'PostToolUse']) {
+        s.hooks[ev] = (Array.isArray(s.hooks[ev]) ? s.hooks[ev] : []).filter(e => !isGovernEntry(e));
+        s.hooks[ev].push(hookEntry);
+      }
+      fs.writeFileSync(p, JSON.stringify(s, null, 2));
+    " "$CLAUDE_SETTINGS"
+    CLAUDE_JSON="$HOME/.claude.json"
+    [ -f "$CLAUDE_JSON" ] || echo '{}' > "$CLAUDE_JSON"
+    node -e "
+      const fs = require('fs');
+      const p = process.argv[1];
+      let c = {};
+      try { c = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+      c.mcpServers = c.mcpServers || {};
+      c.mcpServers.acp = {
+        command: 'sh',
+        args: ['-c', 'exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header \"Authorization: Bearer \$(cat ~/.acp/credentials)\"'],
+      };
+      fs.writeFileSync(p, JSON.stringify(c, null, 2));
+    " "$CLAUDE_JSON"
+    echo "  ${C_GREEN}✓${C_RESET} [Claude Code] hooks + MCP registered directly (plugin CLI unavailable — update Claude Code for auto-updates)"
+  fi
 
   # ── Cost X-ray wrapper (pricing out of the box) ─────────────────────
   # Hooks govern tool calls but can't see model traffic. `claude-acp` also
@@ -747,6 +885,24 @@ if [ "$HAS_CURSOR" = true ]; then
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
   " "$CURSOR_HOOKS"
   echo "  ${C_GREEN}✓${C_RESET} [Cursor] preToolUse + postToolUse hooks registered"
+
+  # ACP introspection MCP — same mcp-remote stdio shape as Claude Code,
+  # into Cursor's ~/.cursor/mcp.json.
+  CURSOR_MCP="$HOME/.cursor/mcp.json"
+  [ -f "$CURSOR_MCP" ] || echo '{}' > "$CURSOR_MCP"
+  node -e "
+    const fs = require('fs');
+    const p = process.argv[1];
+    let c = {};
+    try { c = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+    c.mcpServers = c.mcpServers || {};
+    c.mcpServers.acp = {
+      command: 'sh',
+      args: ['-c', 'exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header \"Authorization: Bearer \$(cat ~/.acp/credentials)\"'],
+    };
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+  " "$CURSOR_MCP"
+  echo "  ${C_GREEN}✓${C_RESET} [Cursor] ACP introspection MCP registered"
   INSTALLED="${INSTALLED:+$INSTALLED, }Cursor"
 fi
 
@@ -798,7 +954,7 @@ if [ "$HAS_CODEX" = true ]; then
 
 [mcp_servers.acp]
 command = "sh"
-args = ["-c", 'exec npx -y mcp-remote https://mcp.agenticcontrolplane.com/mcp --header "Authorization: Bearer $(cat ~/.acp/credentials)"']
+args = ["-c", 'exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header "Authorization: Bearer $(cat ~/.acp/credentials)"']
 MCPBLOCK
   fi
 
@@ -890,6 +1046,59 @@ if [ "$HAS_OPENCLAW" = true ]; then
     INSTALLED="${INSTALLED:+$INSTALLED, }OpenClaw"
   } || {
     echo "  ${C_RED}✗${C_RESET} [OpenClaw] Plugin install failed — try: openclaw plugins install @gatewaystack/acp-governance"
+  }
+fi
+
+# ── Step 1e: opencode setup ───────────────────────────────────────────
+
+# Cloud-only: the acp-opencode plugin is npm-fetched by opencode itself and
+# governs via the workspace token — local decisions aren't wired there yet,
+# so --local skips it (same rule as the Codex MCP connector).
+if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}[opencode] Skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+fi
+if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  [opencode] Registering governance plugin..."
+
+  # opencode governs via the published acp-opencode plugin (npm), which it
+  # auto-installs from its own config on next start. Unlike Claude Code /
+  # Cursor / Codex (which shell out to ~/.acp/govern.mjs), opencode runs the
+  # plugin's hooks in-process: permission.ask (allow/deny/ask), a deny
+  # backstop, and a zero-credential local metering plane. Same
+  # ~/.acp/credentials token, so one auth covers every harness.
+  OPENCODE_JSON="$HOME/.config/opencode/opencode.json"
+  mkdir -p "$HOME/.config/opencode"
+  [ -f "$OPENCODE_JSON" ] || printf '{\n  "$schema": "https://opencode.ai/config.json"\n}\n' > "$OPENCODE_JSON"
+
+  # Migration: older installers wrote an inline plugin here. Remove it so the
+  # npm plugin doesn't end up governing every tool call twice.
+  rm -f "$HOME/.config/opencode/plugin/acp-govern.ts"
+
+  node -e '
+    const fs = require("fs");
+    const p = process.argv[1];
+    let c = {};
+    try { c = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+    c.plugin = Array.isArray(c.plugin) ? c.plugin : [];
+    if (!c.plugin.includes("acp-opencode")) c.plugin.push("acp-opencode");
+    // permission "ask" is what lets ACP allow/ask reach a tool call; fill gaps
+    // only, never override a choice the user set deliberately.
+    c.permission = c.permission || {};
+    for (const t of ["bash", "edit", "webfetch"]) if (!c.permission[t]) c.permission[t] = "ask";
+    // ACP introspection MCP (opencode.ai/docs/mcp-servers).
+    c.mcp = c.mcp || {};
+    c.mcp.acp = {
+      type: "local",
+      command: ["sh", "-c", "exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header \"Authorization: Bearer $(cat ~/.acp/credentials)\""],
+      enabled: true,
+    };
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+  ' "$OPENCODE_JSON" && {
+    echo "  ${C_GREEN}✓${C_RESET} [opencode] Plugin registered (acp-opencode) + permission gate + introspection MCP"
+    echo "     Restart opencode — it installs the plugin from npm and governs every tool call."
+    INSTALLED="${INSTALLED:+$INSTALLED, }opencode"
+  } || {
+    echo "  ${C_RED}✗${C_RESET} [opencode] Config update failed — add \"plugin\": [\"acp-opencode\"] to $OPENCODE_JSON"
   }
 fi
 
@@ -1010,8 +1219,43 @@ if [ "$KEY_SEEN" = true ]; then
     -H "Authorization: Bearer $ACP_KEY" \
     "$API_BASE/api/v1/runs?window=6h" 2>/dev/null || true)"
   if [ "$HTTP_CODE" = "200" ]; then
-    echo "  ${C_GREEN}ALLOW${C_RESET}  install.verify · key valid · workspace reachable"
-    echo "  ${C_DIM}Your calls will appear at${C_RESET} $DASHBOARD_BASE/activity"
+    # First GOVERNED call, through the real hook path (node + govern.mjs +
+    # gateway + audit log). Distinguishes "installed and idle" from "hook
+    # broken" server-side, and the user's dashboard gets its first row.
+    BEACON_SESSION="install-$(date +%s)"
+    printf '{"tool_name":"install.verify","tool_input":{"harness":"%s"},"session_id":"%s","hook_event_name":"PreToolUse"}' \
+      "$INSTALLED" "$BEACON_SESSION" \
+      | env ACP_CLIENT=installer node "$CONFIG_DIR/govern.mjs" >/dev/null 2>&1 || true
+    echo "  ${C_GREEN}ALLOW${C_RESET}  install.verify · key valid · first governed call logged"
+    # The aha permalink (gatewaystack-connect#313): first value is a URL in
+    # the terminal — the governed run this install just created, by its key
+    # (runKey == session_id), not a generic dashboard page.
+    echo "  ${C_DIM}Your first governed run:${C_RESET} $DASHBOARD_BASE/sessions/$BEACON_SESSION"
+    # Two-plane coverage report (gatewaystack-connect#367): what this
+    # workspace's traffic actually has, per client, with the exact missing
+    # step — the same contract the console Coverage card renders. On a fresh
+    # workspace there's only the beacon, so print the one-liner instead.
+    SLUG="$(printf '%s' "$ACP_KEY" | cut -d_ -f2)"
+    COV_JSON="$(curl -s --max-time 10 -H "Authorization: Bearer $ACP_KEY" "$API_BASE/$SLUG/admin/coverage" 2>/dev/null || true)"
+    if [ -n "$COV_JSON" ]; then
+      printf '%s' "$COV_JSON" | node -e '
+        let raw=""; process.stdin.on("data",(d)=>raw+=d);
+        process.stdin.on("end",()=>{ try{
+          const d=JSON.parse(raw); if(!d.ok||!Array.isArray(d.clients)) return;
+          const real=d.clients.filter((c)=>c.client!=="installer");
+          console.log("");
+          console.log("  Coverage — interception governs tool calls, the proxy prices model calls:");
+          if(!real.length){
+            console.log("    interception ✓ (verified just now) · proxy comes up with your first model call through it");
+          }
+          for(const c of real){
+            const m=(p)=>p&&p.active?"✓":"✗";
+            console.log("    "+c.client.padEnd(22)+" interception "+m(c.interception)+" · proxy "+m(c.proxy));
+            if(c.fix) console.log("      → "+c.fix.run);
+          }
+        }catch(e){} });' 2>/dev/null || true
+      echo "  ${C_DIM}Live checklist:${C_RESET} $DASHBOARD_BASE  (Coverage card, per agent)"
+    fi
   else
     echo "  ${C_RED}Couldn't verify the key${C_RESET} (HTTP ${HTTP_CODE:-000})."
     echo "  ${C_DIM}Check that ~/.acp/credentials contains exactly the key the page showed,${C_RESET}"
