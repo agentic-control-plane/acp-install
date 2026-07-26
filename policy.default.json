@@ -1,0 +1,11 @@
+{
+  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs, force-push to main) always denies regardless of this file. 'default' applies when no rule matches.",
+  "default": "allow",
+  "rules": {
+    "Bash.rm": "ask",
+    "Bash.curl": "ask",
+    "Bash.git.push": "ask",
+    "Bash.chmod": "ask",
+    "Bash.chown": "ask"
+  }
+}

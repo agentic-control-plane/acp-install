@@ -1,12 +1,19 @@
 # acp-install
 
-> One-line installer for **[Agentic Control Plane](https://agenticcontrolplane.com)** — auditable governance for every tool call from your AI agents.
-
-## Install
+> **Control the tool call, control the agent.**
+> See and stop what your coding agent actually does — every command, edit, and fetch — with one control layer that works the same across Claude Code, Cursor, and Codex. Free, on your machine, no account.
 
 ```bash
-curl -sf https://agenticcontrolplane.com/install.sh | bash
+curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --local
 ```
+
+One command. It detects whichever agents you run and puts the same guardrails in front of all of them:
+
+- **A safety floor nothing can cross** — `rm -rf /`, `mkfs`, `dd` to a disk, a fork bomb, a force-push to `main` are blocked regardless of your policy (and regardless of how the command is spelled).
+- **Your rules, one file** — `~/.acp/policy.json`: `allow` / `ask` / `deny` per tool, applied identically to every agent.
+- **A log of what actually happened** — `tail -f ~/.acp/audit.jsonl` and watch the calls your agent made, on-device. Nothing leaves your machine.
+
+The same policy that stops Claude Code stops Codex. You configure control once, not once per vendor. Outgrow on-device? Re-run without `--local` to connect a workspace — team control, cost X-ray, and a shared console across everyone's agents. The local runtime is the free individual on-ramp; the cloud is the team upgrade.
 
 Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
 
@@ -27,12 +34,15 @@ For whichever AI clients it detects:
    - Writes an ACP section in `~/.codex/AGENTS.md` instructing Codex to call `acp_check` before non-Bash tool invocations
 4. **Opens a browser** for OAuth to provision an ACP workspace and mint an API key
 5. **Saves the key to `~/.acp/credentials`** (mode 0600)
+6. **Installs the `claude-acp` cost-X-ray wrapper** (`~/.acp/bin`) and adds one marked PATH line (`# acp-installer`) to your shell rc
+
+In **`--local` mode**, steps 4–6 and every other piece of cloud wiring are skipped entirely: no OAuth, no MCP server, no cost wrapper, no shell-rc edits. Hooks + the on-device engine only. (Codex note: its hooks cover shell commands today; non-Bash Codex tools aren't hookable yet — in cloud mode the MCP connector covers them.)
 
 The installer is **idempotent**: running it again upgrades existing entries in place without duplicating them or touching unrelated hooks/policies you've configured.
 
 ## Trust signals
 
-- **Source**: this file — read it top-to-bottom, ~660 lines
+- **Source**: [`install.sh`](install.sh) — one self-contained script, read it top-to-bottom
 - **SHA-256**: [`https://agenticcontrolplane.com/install.sh.sha256`](https://agenticcontrolplane.com/install.sh.sha256) — auto-updates on every Agentic Control Plane release
 - **License**: MIT
 - **Dry read**: `curl -sf https://agenticcontrolplane.com/install.sh | less`
@@ -44,8 +54,8 @@ The canonical install URL is `agenticcontrolplane.com/install.sh` (served from t
 
 - Run any non-interactive commands without prompting if creds already exist (it asks "Reconfigure? (y/N)")
 - Install to directories you don't own (`$HOME/.acp/`, `$HOME/.codex/`, `$HOME/.claude/`, `$HOME/.cursor/` only)
-- Phone home to any server other than `api.agenticcontrolplane.com` and (during auth) `cloud.agenticcontrolplane.com`
-- Modify anything outside the client config files documented above
+- Phone home to any server other than `api.agenticcontrolplane.com` and (during auth) `cloud.agenticcontrolplane.com` — **and in `--local` mode, nothing leaves your machine at all** (decisions run on-device from `~/.acp/decide.mjs` + `~/.acp/policy.json`; no network calls)
+- Modify anything outside the client config files documented above (cloud mode adds exactly one marked PATH line to your shell rc for `claude-acp`; local mode touches no rc files)
 - Install binaries or compile anything — it's a pure shell + Node.js script
 
 ## Uninstall
@@ -60,6 +70,7 @@ rm -rf ~/.acp
 # - ~/.codex/hooks.json            remove the "govern.mjs" entries under hooks.PreToolUse[] and hooks.PostToolUse[]
 # - ~/.codex/config.toml           remove the [mcp_servers.acp] block and [features].codex_hooks line
 # - ~/.codex/AGENTS.md             remove the block between <!-- acp:begin --> and <!-- acp:end --> markers
+# - ~/.zshrc / ~/.bashrc           remove the PATH line marked "# acp-installer" (cloud mode only)
 ```
 
 A one-line `uninstall.sh` is planned. Until then, the blocks above are small enough to remove by hand.

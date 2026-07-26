@@ -47,6 +47,12 @@ DASHBOARD_BASE="${ACP_DASHBOARD_BASE:-https://cloud.agenticcontrolplane.com}"
 CONFIG_DIR="$HOME/.acp"
 CREDS_FILE="$CONFIG_DIR/credentials"
 
+# ── Local mode: no account, no cloud, nothing leaves your machine ──────
+# Enable with:  curl -sf …/install.sh | bash -s -- --local   (or ACP_LOCAL=1)
+LOCAL_MODE=false
+for _a in "$@"; do case "$_a" in --local|--no-login) LOCAL_MODE=true ;; esac; done
+[ "${ACP_LOCAL:-}" = "1" ] && LOCAL_MODE=true
+
 # ── Terminal colors ───────────────────────────────────────────────────
 # tput-guarded: green success / red failure / dim secondary, mirroring
 # the console's ALLOW/DENY language. Degrades to plain text when stdout
@@ -124,7 +130,7 @@ mkdir -p "$CONFIG_DIR"
 echo "  [ACP] Installing governance hook script..."
 cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
 #!/usr/bin/env node
-import { readFileSync } from "fs";
+import { readFileSync, existsSync, appendFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -142,12 +148,63 @@ function readToken() {
   catch { return null; }
 }
 
+const ACP_DIR = join(homedir(), ".acp");
 const token = readToken();
-if (!token) process.exit(0);
+// LOCAL mode: no account, no cloud. Active when there's no token AND either a
+// local policy exists or ACP_LOCAL=1. Decisions are made on-device by
+// decide.mjs against ~/.acp/policy.json; calls are logged to ~/.acp/audit.jsonl.
+const LOCAL = !token && (process.env.ACP_LOCAL === "1" || existsSync(join(ACP_DIR, "policy.json")));
+if (!token && !LOCAL) process.exit(0);
 
+// Read stdin via async iteration, not readFileSync("/dev/stdin"): on Linux a
+// non-blocking pipe makes the sync read throw EAGAIN, which would silently
+// skip governance for every call. (Caught by CI on ubuntu.)
 let input;
-try { input = JSON.parse(readFileSync("/dev/stdin", "utf8")); }
-catch { process.exit(0); }
+try {
+  process.stdin.setEncoding("utf8");
+  let raw = "";
+  for await (const chunk of process.stdin) raw += chunk;
+  input = JSON.parse(raw);
+} catch { process.exit(0); }
+
+if (LOCAL) { await runLocal(input); process.exit(0); }
+
+async function runLocal(input) {
+  const audit = (obj) => { try { appendFileSync(join(ACP_DIR, "audit.jsonl"), JSON.stringify(obj) + "\n"); } catch {} };
+  const ev = typeof input.hook_event_name === "string" ? input.hook_event_name : "PreToolUse";
+  if (ev === "PostToolUse") {
+    audit({ ts: new Date().toISOString(), event: "post", client: ACP_CLIENT, tool: input.tool_name });
+    return;
+  }
+  let policy = { default: "allow", rules: {} };
+  try { policy = JSON.parse(readFileSync(join(ACP_DIR, "policy.json"), "utf8")); } catch {}
+  let decide;
+  try { ({ decide } = await import("./decide.mjs")); }
+  catch {
+    // Engine missing/corrupt → never brick, but NEVER silently: say it loud
+    // and leave an audit line, same contract as the cloud path's fail-open.
+    audit({ ts: new Date().toISOString(), event: "pre", client: ACP_CLIENT, tool: input.tool_name,
+            decision: "allow", source: "fail-open", reason: "local engine unavailable (~/.acp/decide.mjs)" });
+    process.stdout.write(JSON.stringify({
+      systemMessage: "[ACP·local] ⚠ decision engine unavailable (~/.acp/decide.mjs) — this call ran UNGOVERNED and was allowed. Re-run the installer to restore it.",
+    }));
+    return;
+  }
+  const d = decide(input.tool_name, input.tool_input, policy);
+  audit({ ts: new Date().toISOString(), event: "pre", client: ACP_CLIENT, tool: input.tool_name,
+          classified: d.classified, decision: d.decision, source: d.source, reason: d.reason });
+  if (d.decision === "deny") {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `[ACP] ${d.reason}` },
+      systemMessage: `[ACP·local] Blocked: ${d.reason}`,
+    }));
+  } else if (d.decision === "ask") {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: `[ACP] ${d.reason}` },
+    }));
+  }
+  // allow → no output (silent allow, still logged to audit.jsonl)
+}
 
 const headers = {
   Authorization: `Bearer ${token}`,
@@ -266,6 +323,281 @@ else handlePreToolUse();
 GOVERN
 chmod +x "$CONFIG_DIR/govern.mjs"
 
+# ── Shared: write decide.mjs (LOCAL decision engine — no cloud, no login) ──
+# Mirrors decide.mjs in the repo verbatim. Pure, self-contained; govern.mjs
+# imports it only in LOCAL mode.
+cat > "$CONFIG_DIR/decide.mjs" << 'DECIDE'
+// decide.mjs — LOCAL decision engine for Agentic Control Plane.
+//
+// Runs entirely on your machine. No account, no network, no phone-home: it
+// classifies a tool call, applies a safety floor, and consults your local
+// policy file (~/.acp/policy.json). This is the same *shape* of decision the
+// hosted gateway makes — the hosted product adds the tuned risk classifier,
+// cross-instance limits, team policy sync, cost X-ray, and the console.
+//
+// This module is intentionally pure and self-contained (no imports, no I/O) so
+// it is trivial to review, run offline, and later publish as the open decision
+// primitive. The dispatcher (govern.mjs) supplies the policy object and writes
+// the audit line; this file only decides.
+//
+// It is mirrored verbatim into install.sh (~/.acp/decide.mjs at install time);
+// test/mirror.test.mjs fails CI if the two ever diverge.
+
+/** Split a command into argv-ish tokens, honoring quotes and stopping at the
+ *  first shell control operator (| ; &). Env-assignments and wrappers are kept
+ *  as tokens; callers strip them. */
+function shellTokens(cmd) {
+  const out = [];
+  let buf = "";
+  let quote = null;
+  for (const ch of String(cmd)) {
+    if (quote) { if (ch === quote) quote = null; else buf += ch; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === " " || ch === "\t" || ch === "\n") { if (buf) { out.push(buf); buf = ""; } continue; }
+    if (ch === "|" || ch === ";" || ch === "&") { if (buf) { out.push(buf); buf = ""; } break; }
+    buf += ch;
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+
+const WRAPPERS = new Set(["sudo", "env", "nice", "nohup", "stdbuf", "timeout", "time", "xargs", "command", "doas"]);
+
+/** Split a command line into its piped/chained segments (on unquoted | & ; and
+ *  newlines), so the floor inspects every command in a compound line, not just
+ *  the first (e.g. `echo hi && rm -rf ~`). */
+function splitSegments(cmd) {
+  const segs = [];
+  let buf = "";
+  let quote = null;
+  for (const ch of String(cmd)) {
+    if (quote) { buf += ch; if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
+    if (ch === "|" || ch === "&" || ch === ";" || ch === "\n") { if (buf.trim()) segs.push(buf.trim()); buf = ""; continue; }
+    buf += ch;
+  }
+  if (buf.trim()) segs.push(buf.trim());
+  return segs;
+}
+
+/** Strip leading env-assignments and benign wrappers; return { bin, args } where
+ *  bin is the canonical binary (basename, no path) and args are its arguments. */
+function parseCommand(cmd) {
+  const toks = shellTokens(cmd);
+  let i = 0;
+  while (i < toks.length) {
+    const t = toks[i];
+    if (t.includes("=") && !t.startsWith("-")) { i++; continue; }        // FOO=bar
+    if (WRAPPERS.has(t)) { i++; while (i < toks.length && toks[i].startsWith("-")) i++; continue; }
+    return { bin: t.split("/").pop(), args: toks.slice(i + 1) };
+  }
+  return { bin: "", args: [] };
+}
+
+/** Canonical binary of a shell command (basename), skipping env + wrappers. */
+function canonicalBinary(cmd) {
+  return parseCommand(cmd).bin;
+}
+
+/** First http(s) host in a command (for curl/wget), else undefined. */
+function firstHost(cmd) {
+  const m = String(cmd).match(/https?:\/\/([^/\s"']+)/i);
+  if (!m) return undefined;
+  return m[1].replace(/^www\./, "").toLowerCase();
+}
+
+function safeParse(s) { try { return JSON.parse(s); } catch { return {}; } }
+
+// Shell subcommands worth policy granularity: `git push` should be governable
+// without also governing `git status`. Keep this small and obvious.
+const SUBCOMMAND_BINS = new Set(["git", "gh", "docker", "kubectl", "npm", "pnpm", "yarn", "pip", "pip3", "gcloud", "aws", "systemctl"]);
+
+/** First non-flag argument (the subcommand), lowercased, or undefined. */
+function firstSubcommand(args) {
+  for (const a of args) { if (!a.startsWith("-")) return a.toLowerCase(); }
+  return undefined;
+}
+
+/**
+ * Classify a tool call into a dotted policy key, e.g. "Bash.rm",
+ * "Bash.git.push", "Bash.curl.api.github.com", "Write", "WebFetch.example.com".
+ */
+export function classifyTool(toolName, toolInput) {
+  const name = String(toolName || "");
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+
+  if (name === "Bash" || name === "run_terminal_cmd" || name === "shell") {
+    const cmd = input.command || input.cmd || "";
+    const { bin, args } = parseCommand(cmd);
+    if (!bin) return "Bash";
+    if (bin === "curl" || bin === "wget") {
+      const host = firstHost(cmd);
+      return host ? `Bash.curl.${host}` : "Bash.curl";
+    }
+    if (SUBCOMMAND_BINS.has(bin)) {
+      const sub = firstSubcommand(args);
+      return sub ? `Bash.${bin}.${sub}` : `Bash.${bin}`;
+    }
+    return `Bash.${bin}`;
+  }
+  if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "create_file" || name === "edit_file") {
+    return "Write";
+  }
+  if (name === "Read" || name === "read_file" || name === "Glob" || name === "Grep" || name === "LS") {
+    return "Read";
+  }
+  if (name === "WebFetch" || name === "WebSearch" || name === "web_search") {
+    const host = firstHost(input.url || "");
+    return host ? `WebFetch.${host}` : "WebFetch";
+  }
+  return name;
+}
+
+// ── Safety floor ──────────────────────────────────────────────────────
+// Obvious, catastrophic, hard-to-undo actions denied regardless of policy.
+// Deliberately conservative and OBVIOUS (not secret heuristics — the tuned
+// detector lives in the hosted product). The bar: "no legitimate agent task
+// ever needs this." Token-based where flag order/spelling varies, so the
+// common phrasings can't slip past (rm -rf ~/ , rm -r -f / , git push -f , …).
+
+/** Does this arg list carry short flag `letter` (e.g. -rf, -f) or `--long`? */
+function hasShortOrLongFlag(args, letter, longName) {
+  for (const a of args) {
+    if (a === `--${longName}`) return true;
+    if (/^-[a-z]+$/i.test(a) && a.slice(1).toLowerCase().includes(letter)) return true;
+  }
+  return false;
+}
+
+const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", "${HOME}", ".", "./", "*", "/*", "./*", "~/*"]);
+
+/** rm with BOTH recursive and force, aimed at a root/home/cwd/glob target. */
+function rmForceFloor(bin, args) {
+  if (bin !== "rm") return null;
+  const recursive = hasShortOrLongFlag(args, "r", "recursive");
+  const force = hasShortOrLongFlag(args, "f", "force");
+  if (!recursive || !force) return null;
+  const targets = args.filter((a) => !a.startsWith("-"));
+  for (const t of targets) {
+    const norm = t.replace(/\/+$/, ""); // trailing slash → same target (~/ ≡ ~)
+    if (RM_DANGER_TARGETS.has(t) || RM_DANGER_TARGETS.has(norm) || norm === "") {
+      return "recursive force-delete of a root/home path";
+    }
+  }
+  return null;
+}
+
+/** git push that force-updates main/master (any flag order, -f or --force, or
+ *  a +refspec). */
+function gitForcePushFloor(bin, args) {
+  if (bin !== "git") return null;
+  if (firstSubcommand(args) !== "push") return null;
+  const targetsMain = args.some((a) => /(^|[:+/])(main|master)$/.test(a));
+  if (!targetsMain) return null;
+  const forceFlag = hasShortOrLongFlag(args, "f", "force") || args.includes("--force-with-lease");
+  const plusRefspec = args.some((a) => /^\+/.test(a) && /(main|master)/.test(a));
+  if (forceFlag || plusRefspec) return "force-push to main/master";
+  return null;
+}
+
+// Shells whose `-c <string>` argument is itself a command line: recurse the
+// floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
+const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+/** If this command hands a string to another interpreter (`bash -c '…'`,
+ *  `eval …`), return that inner command line; else undefined. */
+function innerShellCommand(bin, args) {
+  if (SHELL_BINS.has(bin)) {
+    for (let i = 0; i < args.length; i++) {
+      if (/^-[a-z]*c[a-z]*$/i.test(args[i])) return args[i + 1];
+    }
+    return undefined;
+  }
+  if (bin === "eval") return args.join(" ");
+  return undefined;
+}
+
+/** Token floors, per segment, recursing one level into shell -c / eval. */
+function tokenFloorScan(cmd, depth = 0) {
+  if (depth > 3) return null;
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    const hit = rmForceFloor(bin, args) || gitForcePushFloor(bin, args);
+    if (hit) return hit;
+    const inner = innerShellCommand(bin, args);
+    if (inner) {
+      const h = tokenFloorScan(inner, depth + 1);
+      if (h) return h;
+    }
+  }
+  return null;
+}
+
+const REGEX_RULES = [
+  [/\bmkfs\.[a-z0-9]+\b|\bmkfs\s/i, "filesystem format (mkfs)"],
+  [/\bdd\b[^|;&]*\bof=\/dev\/(sd|nvme|disk|hd)/i, "raw disk overwrite (dd of=/dev/…)"],
+  [/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, "fork bomb"],
+  [/\bchmod\s+-R\s+0*777\s+\/(\s|$)/i, "recursive chmod 777 on /"],
+  [/>\s*\/dev\/(sd|nvme|disk|hd)[a-z0-9]*/i, "redirect over a raw disk device"],
+];
+
+/**
+ * The safety floor: obvious, catastrophic commands denied regardless of policy.
+ * Returns a deny reason, or null.
+ */
+export function hardlineFloor(toolName, toolInput) {
+  const name = String(toolName || "");
+  if (name !== "Bash" && name !== "run_terminal_cmd" && name !== "shell") return null;
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+  const cmd = String(input.command || input.cmd || "");
+
+  // Token floors run per-segment so a catastrophe hidden after `&&`/`;`/`|`
+  // (e.g. `echo ok && rm -rf ~`) is still caught, and recurse into
+  // `bash -c "…"` / `eval …` so hand-off to another shell can't launder it.
+  const tokenFloor = tokenFloorScan(cmd);
+  if (tokenFloor) return tokenFloor;
+
+  const c = cmd.replace(/\s+/g, " ").trim();
+  for (const [re, why] of REGEX_RULES) if (re.test(c)) return why;
+  return null;
+}
+
+/**
+ * Walk a dotted key from most-specific to least, e.g.
+ * "Bash.curl.api.github.com" → [..., "Bash.curl", "Bash"].
+ */
+export function candidates(key) {
+  const parts = String(key).split(".");
+  const out = [];
+  for (let i = parts.length; i >= 1; i--) out.push(parts.slice(0, i).join("."));
+  return out;
+}
+
+const VALID = new Set(["allow", "ask", "deny"]);
+
+/**
+ * Decide a tool call locally.
+ * @param policy { default: "allow"|"ask"|"deny", rules: { [key]: "allow"|"ask"|"deny" } }
+ * @returns { decision, reason, source, classified }
+ */
+export function decide(toolName, toolInput, policy) {
+  const floor = hardlineFloor(toolName, toolInput);
+  if (floor) return { decision: "deny", reason: floor, source: "hardline", classified: classifyTool(toolName, toolInput) };
+
+  const key = classifyTool(toolName, toolInput);
+  const rules = (policy && policy.rules) || {};
+  for (const cand of candidates(key)) {
+    const r = rules[cand];
+    if (VALID.has(r)) {
+      return { decision: r, reason: `local policy: ${cand} → ${r}`, source: "policy", classified: key };
+    }
+  }
+  const def = VALID.has(policy && policy.default) ? policy.default : "allow";
+  return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key };
+}
+DECIDE
+chmod +x "$CONFIG_DIR/decide.mjs"
+
 # ── Step 1a: Claude Code setup ────────────────────────────────────────
 
 if [ "$HAS_CLAUDE" = true ]; then
@@ -309,6 +641,9 @@ if [ "$HAS_CLAUDE" = true ]; then
   # subscription OAuth or API key — so Anthropic bills you exactly as
   # before; ACP only observes and governs. Deliberately a separate command:
   # plain `claude` stays untouched as the always-working escape hatch.
+  # Cloud-only: model-call pricing needs the proxy, so --local skips all of
+  # this (no wrapper, no PATH edit — local mode touches no shell rc files).
+  if [ "$LOCAL_MODE" = false ]; then
   mkdir -p "$CONFIG_DIR/bin"
   cat > "$CONFIG_DIR/bin/acp-session-summary" << 'SUMMARY'
 #!/bin/sh
@@ -374,6 +709,7 @@ WRAPPER
   fi
   echo "  ${C_GREEN}✓${C_RESET} [Claude Code] Cost X-ray wrapper installed: claude-acp"
   [ "$ADDED_PATH" = true ] && echo "  ${C_DIM}[Claude Code] Added ~/.acp/bin to PATH (open a new terminal to pick it up)${C_RESET}"
+  fi # LOCAL_MODE=false (cost X-ray wrapper)
 
   INSTALLED="${INSTALLED:+$INSTALLED, }Claude Code"
 fi
@@ -454,7 +790,10 @@ if [ "$HAS_CODEX" = true ]; then
   # Authorization header reads ~/.acp/credentials at runtime — no install-
   # time API key needed, and credential rotation is automatic (overwrite
   # the file, restart Codex).
-  if ! grep -q "^\[mcp_servers\.acp\]" "$CODEX_TOML"; then
+  # Cloud-only: the MCP connector and the AGENTS.md acp_check directive both
+  # talk to the hosted gateway. --local wires neither — local mode must make
+  # zero network calls, so Codex gets hook coverage (shell commands) only.
+  if [ "$LOCAL_MODE" = false ] && ! grep -q "^\[mcp_servers\.acp\]" "$CODEX_TOML"; then
     cat >> "$CODEX_TOML" << 'MCPBLOCK'
 
 [mcp_servers.acp]
@@ -493,6 +832,7 @@ MCPBLOCK
   # to call acp_check before non-Bash tools (hooks only cover Bash today).
   # Idempotent: the ACP section is delimited by markers, so re-running
   # replaces only our section and preserves every other instruction.
+  if [ "$LOCAL_MODE" = false ]; then
   CODEX_AGENTS="$HOME/.codex/AGENTS.md"
   [ -f "$CODEX_AGENTS" ] || touch "$CODEX_AGENTS"
   node -e "
@@ -535,6 +875,9 @@ MCPBLOCK
   " "$CODEX_AGENTS"
   echo "  [Codex] AGENTS.md directive installed — Codex will call acp_check before non-Bash tools"
   echo "  ${C_GREEN}✓${C_RESET} [Codex] codex_hooks enabled + PreToolUse/PostToolUse hooks + MCP connector wired"
+  else
+  echo "  ${C_GREEN}✓${C_RESET} [Codex] codex_hooks enabled + PreToolUse/PostToolUse hooks (local: shell commands governed on-device)"
+  fi # LOCAL_MODE (Codex cloud wiring)
   INSTALLED="${INSTALLED:+$INSTALLED, }Codex"
 fi
 
@@ -548,6 +891,42 @@ if [ "$HAS_OPENCLAW" = true ]; then
   } || {
     echo "  ${C_RED}✗${C_RESET} [OpenClaw] Plugin install failed — try: openclaw plugins install @gatewaystack/acp-governance"
   }
+fi
+
+# ── Local mode: skip login, seed a default policy, done ───────────────
+if [ "$LOCAL_MODE" = true ]; then
+  if [ ! -f "$CONFIG_DIR/policy.json" ]; then
+    cat > "$CONFIG_DIR/policy.json" << 'POLICY'
+{
+  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs, force-push to main) always denies regardless of this file. 'default' applies when no rule matches.",
+  "default": "allow",
+  "rules": {
+    "Bash.rm": "ask",
+    "Bash.curl": "ask",
+    "Bash.git.push": "ask",
+    "Bash.chmod": "ask",
+    "Bash.chown": "ask"
+  }
+}
+POLICY
+  fi
+  echo ""
+  echo "  ${C_GREEN}ALLOW${C_RESET}  local mode active — no account, nothing leaves your machine"
+  echo "  ${C_DIM}Hooks installed for:${C_RESET} $INSTALLED"
+  [ "$HAS_CODEX" = true ] && echo "  ${C_DIM}Codex note: its hooks cover shell commands today; non-Bash tools aren't hooked by Codex yet.${C_RESET}"
+  echo ""
+  echo "  Decisions run on-device from ${C_DIM}~/.acp/policy.json${C_RESET} (edit it — allow / ask / deny)."
+  echo "  Every call is logged to ${C_DIM}~/.acp/audit.jsonl${C_RESET}:"
+  echo "    ${C_DIM}tail -f ~/.acp/audit.jsonl${C_RESET}"
+  echo ""
+  echo "  The safety floor always blocks the catastrophic (rm -rf /, mkfs, dd, fork bombs,"
+  echo "  force-push to main) regardless of policy."
+  echo ""
+  echo "  Restart your AI client to activate the hook."
+  echo "  Want team control, cost X-ray, and a shared console across everyone's agents?"
+  echo "  Re-run without ${C_DIM}--local${C_RESET} to connect a workspace."
+  echo ""
+  exit 0
 fi
 
 # ── Step 2: Authenticate ──────────────────────────────────────────────

@@ -1,12 +1,28 @@
 name: Mirror drift check
 # This repo's entire purpose is being the auditable mirror of the live
-# installer. Fail loudly whenever the served script diverges from the repo.
+# installer. Fail loudly whenever the served script diverges from the repo,
+# and run the local decision-engine fixtures on every change.
 on:
   push: { branches: [main] }
+  pull_request: { branches: [main] }
   schedule: [{ cron: "23 6 * * *" }]
   workflow_dispatch: {}
 jobs:
+  test:
+    # Unit fixtures for decide.mjs (safety floor + classifier) and the
+    # embedded-copy drift guard. Runs on every push and PR.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: node --test
+
   drift:
+    # Compares the repo's install.sh to what's actually served. Meaningful only
+    # once a change is deployed, so it's skipped on PRs (where the fix is
+    # intentionally ahead of live) and runs on push-to-main + the daily cron.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
