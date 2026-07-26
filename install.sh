@@ -172,7 +172,17 @@ async function runLocal(input) {
   let policy = { default: "allow", rules: {} };
   try { policy = JSON.parse(readFileSync(join(ACP_DIR, "policy.json"), "utf8")); } catch {}
   let decide;
-  try { ({ decide } = await import("./decide.mjs")); } catch { return; } // no engine → never brick
+  try { ({ decide } = await import("./decide.mjs")); }
+  catch {
+    // Engine missing/corrupt → never brick, but NEVER silently: say it loud
+    // and leave an audit line, same contract as the cloud path's fail-open.
+    audit({ ts: new Date().toISOString(), event: "pre", client: ACP_CLIENT, tool: input.tool_name,
+            decision: "allow", source: "fail-open", reason: "local engine unavailable (~/.acp/decide.mjs)" });
+    process.stdout.write(JSON.stringify({
+      systemMessage: "[ACP·local] ⚠ decision engine unavailable (~/.acp/decide.mjs) — this call ran UNGOVERNED and was allowed. Re-run the installer to restore it.",
+    }));
+    return;
+  }
   const d = decide(input.tool_name, input.tool_input, policy);
   audit({ ts: new Date().toISOString(), event: "pre", client: ACP_CLIENT, tool: input.tool_name,
           classified: d.classified, decision: d.decision, source: d.source, reason: d.reason });
