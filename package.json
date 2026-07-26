@@ -1,0 +1,11 @@
+{
+  "name": "acp-install",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Auditable mirror of the Agentic Control Plane installer + local decision engine.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

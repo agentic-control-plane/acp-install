@@ -1,28 +1,21 @@
 # acp-install
 
-> One-line installer for **[Agentic Control Plane](https://agenticcontrolplane.com)** — auditable governance for every tool call from your AI agents.
-
-## Install
-
-```bash
-curl -sf https://agenticcontrolplane.com/install.sh | bash
-```
-
-Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
-
-### Local mode — no account, nothing leaves your machine
+> **Control the tool call, control the agent.**
+> See and stop what your coding agent actually does — every command, edit, and fetch — with one control layer that works the same across Claude Code, Cursor, and Codex. Free, on your machine, no account.
 
 ```bash
 curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --local
 ```
 
-Governs your agents **entirely on-device**. No signup, no key, no phone-home. Decisions run from `~/.acp/policy.json` (`allow` / `ask` / `deny` per tool), a **safety floor** blocks the catastrophic (`rm -rf /`, `mkfs`, `dd` of a disk, fork bombs, force-push to `main`) regardless of policy, and every call is logged locally — see what your agent actually did:
+One command. It detects whichever agents you run and puts the same guardrails in front of all of them:
 
-```bash
-tail -f ~/.acp/audit.jsonl
-```
+- **A safety floor nothing can cross** — `rm -rf /`, `mkfs`, `dd` to a disk, a fork bomb, a force-push to `main` are blocked regardless of your policy (and regardless of how the command is spelled).
+- **Your rules, one file** — `~/.acp/policy.json`: `allow` / `ask` / `deny` per tool, applied identically to every agent.
+- **A log of what actually happened** — `tail -f ~/.acp/audit.jsonl` and watch the calls your agent made, on-device. Nothing leaves your machine.
 
-The same one command works across Claude Code, Cursor, and Codex. Want team control, cost X-ray, and a shared console across **everyone's** agents at the org level? Re-run without `--local` to connect a workspace — the local runtime is the free individual on-ramp; the cloud is the team upgrade.
+The same policy that stops Claude Code stops Codex. You configure control once, not once per vendor. Outgrow on-device? Re-run without `--local` to connect a workspace — team control, cost X-ray, and a shared console across everyone's agents. The local runtime is the free individual on-ramp; the cloud is the team upgrade.
+
+Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
 
 Want the long version first? [Every file the installer writes, in plain language](https://agenticcontrolplane.com/install-explained) · [getting started](https://agenticcontrolplane.com/getting-started) · per-client guides for [Claude Code](https://agenticcontrolplane.com/integrations/claude-code) and [Codex CLI](https://agenticcontrolplane.com/integrations/codex)
 

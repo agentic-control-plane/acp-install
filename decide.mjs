@@ -11,9 +11,12 @@
 // primitive. The dispatcher (govern.mjs) supplies the policy object and writes
 // the audit line; this file only decides.
 //
-// It is mirrored verbatim into install.sh (~/.acp/decide.mjs at install time).
+// It is mirrored verbatim into install.sh (~/.acp/decide.mjs at install time);
+// test/mirror.test.mjs fails CI if the two ever diverge.
 
-/** Strip leading env-assignments / sudo / benign wrappers, return argv-ish tokens. */
+/** Split a command into argv-ish tokens, honoring quotes and stopping at the
+ *  first shell control operator (| ; &). Env-assignments and wrappers are kept
+ *  as tokens; callers strip them. */
 function shellTokens(cmd) {
   const out = [];
   let buf = "";
@@ -29,19 +32,42 @@ function shellTokens(cmd) {
   return out;
 }
 
-const WRAPPERS = new Set(["sudo", "env", "nice", "nohup", "stdbuf", "timeout", "time", "xargs", "command"]);
+const WRAPPERS = new Set(["sudo", "env", "nice", "nohup", "stdbuf", "timeout", "time", "xargs", "command", "doas"]);
 
-/** Canonical binary of a shell command, skipping env-vars and benign wrappers. */
-function canonicalBinary(cmd) {
+/** Split a command line into its piped/chained segments (on unquoted | & ; and
+ *  newlines), so the floor inspects every command in a compound line, not just
+ *  the first (e.g. `echo hi && rm -rf ~`). */
+function splitSegments(cmd) {
+  const segs = [];
+  let buf = "";
+  let quote = null;
+  for (const ch of String(cmd)) {
+    if (quote) { buf += ch; if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
+    if (ch === "|" || ch === "&" || ch === ";" || ch === "\n") { if (buf.trim()) segs.push(buf.trim()); buf = ""; continue; }
+    buf += ch;
+  }
+  if (buf.trim()) segs.push(buf.trim());
+  return segs;
+}
+
+/** Strip leading env-assignments and benign wrappers; return { bin, args } where
+ *  bin is the canonical binary (basename, no path) and args are its arguments. */
+function parseCommand(cmd) {
   const toks = shellTokens(cmd);
   let i = 0;
   while (i < toks.length) {
     const t = toks[i];
-    if (t.includes("=") && !t.startsWith("-")) { i++; continue; } // FOO=bar
+    if (t.includes("=") && !t.startsWith("-")) { i++; continue; }        // FOO=bar
     if (WRAPPERS.has(t)) { i++; while (i < toks.length && toks[i].startsWith("-")) i++; continue; }
-    return t.split("/").pop();
+    return { bin: t.split("/").pop(), args: toks.slice(i + 1) };
   }
-  return "";
+  return { bin: "", args: [] };
+}
+
+/** Canonical binary of a shell command (basename), skipping env + wrappers. */
+function canonicalBinary(cmd) {
+  return parseCommand(cmd).bin;
 }
 
 /** First http(s) host in a command (for curl/wget), else undefined. */
@@ -51,9 +77,21 @@ function firstHost(cmd) {
   return m[1].replace(/^www\./, "").toLowerCase();
 }
 
+function safeParse(s) { try { return JSON.parse(s); } catch { return {}; } }
+
+// Shell subcommands worth policy granularity: `git push` should be governable
+// without also governing `git status`. Keep this small and obvious.
+const SUBCOMMAND_BINS = new Set(["git", "gh", "docker", "kubectl", "npm", "pnpm", "yarn", "pip", "pip3", "gcloud", "aws", "systemctl"]);
+
+/** First non-flag argument (the subcommand), lowercased, or undefined. */
+function firstSubcommand(args) {
+  for (const a of args) { if (!a.startsWith("-")) return a.toLowerCase(); }
+  return undefined;
+}
+
 /**
  * Classify a tool call into a dotted policy key, e.g. "Bash.rm",
- * "Bash.curl.api.github.com", "Write", "WebFetch.example.com".
+ * "Bash.git.push", "Bash.curl.api.github.com", "Write", "WebFetch.example.com".
  */
 export function classifyTool(toolName, toolInput) {
   const name = String(toolName || "");
@@ -61,11 +99,15 @@ export function classifyTool(toolName, toolInput) {
 
   if (name === "Bash" || name === "run_terminal_cmd" || name === "shell") {
     const cmd = input.command || input.cmd || "";
-    const bin = canonicalBinary(cmd);
+    const { bin, args } = parseCommand(cmd);
     if (!bin) return "Bash";
     if (bin === "curl" || bin === "wget") {
       const host = firstHost(cmd);
       return host ? `Bash.curl.${host}` : "Bash.curl";
+    }
+    if (SUBCOMMAND_BINS.has(bin)) {
+      const sub = firstSubcommand(args);
+      return sub ? `Bash.${bin}.${sub}` : `Bash.${bin}`;
     }
     return `Bash.${bin}`;
   }
@@ -82,12 +124,63 @@ export function classifyTool(toolName, toolInput) {
   return name;
 }
 
-function safeParse(s) { try { return JSON.parse(s); } catch { return {}; } }
+// ── Safety floor ──────────────────────────────────────────────────────
+// Obvious, catastrophic, hard-to-undo actions denied regardless of policy.
+// Deliberately conservative and OBVIOUS (not secret heuristics — the tuned
+// detector lives in the hosted product). The bar: "no legitimate agent task
+// ever needs this." Token-based where flag order/spelling varies, so the
+// common phrasings can't slip past (rm -rf ~/ , rm -r -f / , git push -f , …).
+
+/** Does this arg list carry short flag `letter` (e.g. -rf, -f) or `--long`? */
+function hasShortOrLongFlag(args, letter, longName) {
+  for (const a of args) {
+    if (a === `--${longName}`) return true;
+    if (/^-[a-z]+$/i.test(a) && a.slice(1).toLowerCase().includes(letter)) return true;
+  }
+  return false;
+}
+
+const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", ".", "./", "*", "/*", "./*", "~/*"]);
+
+/** rm with BOTH recursive and force, aimed at a root/home/cwd/glob target. */
+function rmForceFloor(bin, args) {
+  if (bin !== "rm") return null;
+  const recursive = hasShortOrLongFlag(args, "r", "recursive");
+  const force = hasShortOrLongFlag(args, "f", "force");
+  if (!recursive || !force) return null;
+  const targets = args.filter((a) => !a.startsWith("-"));
+  for (const t of targets) {
+    const norm = t.replace(/\/+$/, ""); // trailing slash → same target (~/ ≡ ~)
+    if (RM_DANGER_TARGETS.has(t) || RM_DANGER_TARGETS.has(norm) || norm === "") {
+      return "recursive force-delete of a root/home path";
+    }
+  }
+  return null;
+}
+
+/** git push that force-updates main/master (any flag order, -f or --force, or
+ *  a +refspec). */
+function gitForcePushFloor(bin, args) {
+  if (bin !== "git") return null;
+  if (firstSubcommand(args) !== "push") return null;
+  const targetsMain = args.some((a) => /(^|[:+/])(main|master)$/.test(a));
+  if (!targetsMain) return null;
+  const forceFlag = hasShortOrLongFlag(args, "f", "force") || args.includes("--force-with-lease");
+  const plusRefspec = args.some((a) => /^\+/.test(a) && /(main|master)/.test(a));
+  if (forceFlag || plusRefspec) return "force-push to main/master";
+  return null;
+}
+
+const REGEX_RULES = [
+  [/\bmkfs\.[a-z0-9]+\b|\bmkfs\s/i, "filesystem format (mkfs)"],
+  [/\bdd\b[^|;&]*\bof=\/dev\/(sd|nvme|disk|hd)/i, "raw disk overwrite (dd of=/dev/…)"],
+  [/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, "fork bomb"],
+  [/\bchmod\s+-R\s+0*777\s+\/(\s|$)/i, "recursive chmod 777 on /"],
+  [/>\s*\/dev\/(sd|nvme|disk|hd)[a-z0-9]*/i, "redirect over a raw disk device"],
+];
 
 /**
- * The safety floor: obvious, catastrophic, hard-to-undo commands that should be
- * denied regardless of policy. Deliberately conservative and OBVIOUS (these are
- * not secret heuristics — the tuned detector lives in the hosted product).
+ * The safety floor: obvious, catastrophic commands denied regardless of policy.
  * Returns a deny reason, or null.
  */
 export function hardlineFloor(toolName, toolInput) {
@@ -95,18 +188,17 @@ export function hardlineFloor(toolName, toolInput) {
   if (name !== "Bash" && name !== "run_terminal_cmd" && name !== "shell") return null;
   const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
   const cmd = String(input.command || input.cmd || "");
-  const c = cmd.replace(/\s+/g, " ").trim();
 
-  const RULES = [
-    [/\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b[^|;&]*\s(\/|~|\$HOME|\/\*|\.)(\s|$)/i, "recursive force-delete of a root/home path"],
-    [/\bmkfs\.[a-z0-9]+\b|\bmkfs\s/i, "filesystem format (mkfs)"],
-    [/\bdd\b[^|;&]*\bof=\/dev\/(sd|nvme|disk|hd)/i, "raw disk overwrite (dd of=/dev/…)"],
-    [/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, "fork bomb"],
-    [/\bchmod\s+-R\s+0*777\s+\/(\s|$)/i, "recursive chmod 777 on /"],
-    [/>\s*\/dev\/(sd|nvme|disk|hd)[a-z0-9]*/i, "redirect over a raw disk device"],
-    [/\bgit\s+push\b[^|;&]*--force[^|;&]*\b(origin\s+)?(main|master)\b/i, "force-push to main/master"],
-  ];
-  for (const [re, why] of RULES) if (re.test(c)) return why;
+  // Token floors run per-segment so a catastrophe hidden after `&&`/`;`/`|`
+  // (e.g. `echo ok && rm -rf ~`) is still caught.
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    const tokenFloor = rmForceFloor(bin, args) || gitForcePushFloor(bin, args);
+    if (tokenFloor) return tokenFloor;
+  }
+
+  const c = cmd.replace(/\s+/g, " ").trim();
+  for (const [re, why] of REGEX_RULES) if (re.test(c)) return why;
   return null;
 }
 
