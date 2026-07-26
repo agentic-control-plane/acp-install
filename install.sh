@@ -156,9 +156,16 @@ const token = readToken();
 const LOCAL = !token && (process.env.ACP_LOCAL === "1" || existsSync(join(ACP_DIR, "policy.json")));
 if (!token && !LOCAL) process.exit(0);
 
+// Read stdin via async iteration, not readFileSync("/dev/stdin"): on Linux a
+// non-blocking pipe makes the sync read throw EAGAIN, which would silently
+// skip governance for every call. (Caught by CI on ubuntu.)
 let input;
-try { input = JSON.parse(readFileSync("/dev/stdin", "utf8")); }
-catch { process.exit(0); }
+try {
+  process.stdin.setEncoding("utf8");
+  let raw = "";
+  for await (const chunk of process.stdin) raw += chunk;
+  input = JSON.parse(raw);
+} catch { process.exit(0); }
 
 if (LOCAL) { await runLocal(input); process.exit(0); }
 
