@@ -140,7 +140,7 @@ function hasShortOrLongFlag(args, letter, longName) {
   return false;
 }
 
-const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", ".", "./", "*", "/*", "./*", "~/*"]);
+const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", "${HOME}", ".", "./", "*", "/*", "./*", "~/*"]);
 
 /** rm with BOTH recursive and force, aimed at a root/home/cwd/glob target. */
 function rmForceFloor(bin, args) {
@@ -171,6 +171,39 @@ function gitForcePushFloor(bin, args) {
   return null;
 }
 
+// Shells whose `-c <string>` argument is itself a command line: recurse the
+// floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
+const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+/** If this command hands a string to another interpreter (`bash -c '…'`,
+ *  `eval …`), return that inner command line; else undefined. */
+function innerShellCommand(bin, args) {
+  if (SHELL_BINS.has(bin)) {
+    for (let i = 0; i < args.length; i++) {
+      if (/^-[a-z]*c[a-z]*$/i.test(args[i])) return args[i + 1];
+    }
+    return undefined;
+  }
+  if (bin === "eval") return args.join(" ");
+  return undefined;
+}
+
+/** Token floors, per segment, recursing one level into shell -c / eval. */
+function tokenFloorScan(cmd, depth = 0) {
+  if (depth > 3) return null;
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    const hit = rmForceFloor(bin, args) || gitForcePushFloor(bin, args);
+    if (hit) return hit;
+    const inner = innerShellCommand(bin, args);
+    if (inner) {
+      const h = tokenFloorScan(inner, depth + 1);
+      if (h) return h;
+    }
+  }
+  return null;
+}
+
 const REGEX_RULES = [
   [/\bmkfs\.[a-z0-9]+\b|\bmkfs\s/i, "filesystem format (mkfs)"],
   [/\bdd\b[^|;&]*\bof=\/dev\/(sd|nvme|disk|hd)/i, "raw disk overwrite (dd of=/dev/…)"],
@@ -190,12 +223,10 @@ export function hardlineFloor(toolName, toolInput) {
   const cmd = String(input.command || input.cmd || "");
 
   // Token floors run per-segment so a catastrophe hidden after `&&`/`;`/`|`
-  // (e.g. `echo ok && rm -rf ~`) is still caught.
-  for (const seg of splitSegments(cmd)) {
-    const { bin, args } = parseCommand(seg);
-    const tokenFloor = rmForceFloor(bin, args) || gitForcePushFloor(bin, args);
-    if (tokenFloor) return tokenFloor;
-  }
+  // (e.g. `echo ok && rm -rf ~`) is still caught, and recurse into
+  // `bash -c "…"` / `eval …` so hand-off to another shell can't launder it.
+  const tokenFloor = tokenFloorScan(cmd);
+  if (tokenFloor) return tokenFloor;
 
   const c = cmd.replace(/\s+/g, " ").trim();
   for (const [re, why] of REGEX_RULES) if (re.test(c)) return why;

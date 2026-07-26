@@ -24,3 +24,15 @@ test("install.sh embeds decide.mjs verbatim", () => {
     "install.sh's embedded decide.mjs has drifted from the standalone decide.mjs — re-sync them (they must be verbatim identical).",
   );
 });
+
+test("install.sh seeds the same policy as policy.default.json", () => {
+  const sh = readFileSync(join(ROOT, "install.sh"), "utf8");
+  const repoPolicy = JSON.parse(readFileSync(join(ROOT, "policy.default.json"), "utf8"));
+  const m = sh.match(/cat > "\$CONFIG_DIR\/policy\.json" << 'POLICY'\n([\s\S]*?)\nPOLICY\n/);
+  assert.ok(m, "could not find the seeded policy heredoc in install.sh");
+  assert.deepEqual(
+    JSON.parse(m[1]),
+    repoPolicy,
+    "install.sh's seeded policy has drifted from policy.default.json — keep them identical.",
+  );
+});

@@ -42,6 +42,16 @@ const FLOOR_DENY = [
   "mkfs.ext4 /dev/sda1",
   "dd if=/dev/zero of=/dev/sda bs=1M",
   "chmod -R 777 /",
+  // laundering through another interpreter
+  ['bash -c "', RM, '-rf ~"'].join(" "),          // bash -c " rm -rf ~"
+  ["sh -lc '", RM, "-rf /'"].join(" "),           // sh -lc, single quotes
+  ["eval", RM, "-rf", "~"].join(" "),             // eval, bare
+  ['eval "', RM, '-rf ~"'].join(" "),             // eval, quoted
+  ['bash -c "echo ok &&', RM, '-rf ~"'].join(" "),// compound inside -c
+  ["bash", "-c", `"${push("-f", "origin", "main")}"`].join(" "),
+  // $HOME spellings
+  [RM, "-rf", "$HOME"].join(" "),
+  [RM, "-rf", "${HOME}"].join(" "),
 ];
 
 for (const cmd of FLOOR_DENY) {
@@ -60,6 +70,9 @@ const FLOOR_ALLOW = [
   "git status",
   "git commit -m wip",
   "ls -la /",
+  "bash -c 'echo hi'",                    // -c with a benign command
+  "bash ./scripts/build.sh",              // running a script is not -c
+  "git commit -m 'eval cleanup'",         // interpreter words inside a message
 ];
 
 for (const cmd of FLOOR_ALLOW) {

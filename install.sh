@@ -452,7 +452,7 @@ function hasShortOrLongFlag(args, letter, longName) {
   return false;
 }
 
-const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", ".", "./", "*", "/*", "./*", "~/*"]);
+const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", "${HOME}", ".", "./", "*", "/*", "./*", "~/*"]);
 
 /** rm with BOTH recursive and force, aimed at a root/home/cwd/glob target. */
 function rmForceFloor(bin, args) {
@@ -483,6 +483,39 @@ function gitForcePushFloor(bin, args) {
   return null;
 }
 
+// Shells whose `-c <string>` argument is itself a command line: recurse the
+// floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
+const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+/** If this command hands a string to another interpreter (`bash -c '…'`,
+ *  `eval …`), return that inner command line; else undefined. */
+function innerShellCommand(bin, args) {
+  if (SHELL_BINS.has(bin)) {
+    for (let i = 0; i < args.length; i++) {
+      if (/^-[a-z]*c[a-z]*$/i.test(args[i])) return args[i + 1];
+    }
+    return undefined;
+  }
+  if (bin === "eval") return args.join(" ");
+  return undefined;
+}
+
+/** Token floors, per segment, recursing one level into shell -c / eval. */
+function tokenFloorScan(cmd, depth = 0) {
+  if (depth > 3) return null;
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    const hit = rmForceFloor(bin, args) || gitForcePushFloor(bin, args);
+    if (hit) return hit;
+    const inner = innerShellCommand(bin, args);
+    if (inner) {
+      const h = tokenFloorScan(inner, depth + 1);
+      if (h) return h;
+    }
+  }
+  return null;
+}
+
 const REGEX_RULES = [
   [/\bmkfs\.[a-z0-9]+\b|\bmkfs\s/i, "filesystem format (mkfs)"],
   [/\bdd\b[^|;&]*\bof=\/dev\/(sd|nvme|disk|hd)/i, "raw disk overwrite (dd of=/dev/…)"],
@@ -502,12 +535,10 @@ export function hardlineFloor(toolName, toolInput) {
   const cmd = String(input.command || input.cmd || "");
 
   // Token floors run per-segment so a catastrophe hidden after `&&`/`;`/`|`
-  // (e.g. `echo ok && rm -rf ~`) is still caught.
-  for (const seg of splitSegments(cmd)) {
-    const { bin, args } = parseCommand(seg);
-    const tokenFloor = rmForceFloor(bin, args) || gitForcePushFloor(bin, args);
-    if (tokenFloor) return tokenFloor;
-  }
+  // (e.g. `echo ok && rm -rf ~`) is still caught, and recurse into
+  // `bash -c "…"` / `eval …` so hand-off to another shell can't launder it.
+  const tokenFloor = tokenFloorScan(cmd);
+  if (tokenFloor) return tokenFloor;
 
   const c = cmd.replace(/\s+/g, " ").trim();
   for (const [re, why] of REGEX_RULES) if (re.test(c)) return why;
@@ -593,6 +624,9 @@ if [ "$HAS_CLAUDE" = true ]; then
   # subscription OAuth or API key — so Anthropic bills you exactly as
   # before; ACP only observes and governs. Deliberately a separate command:
   # plain `claude` stays untouched as the always-working escape hatch.
+  # Cloud-only: model-call pricing needs the proxy, so --local skips all of
+  # this (no wrapper, no PATH edit — local mode touches no shell rc files).
+  if [ "$LOCAL_MODE" = false ]; then
   mkdir -p "$CONFIG_DIR/bin"
   cat > "$CONFIG_DIR/bin/acp-session-summary" << 'SUMMARY'
 #!/bin/sh
@@ -658,6 +692,7 @@ WRAPPER
   fi
   echo "  ${C_GREEN}✓${C_RESET} [Claude Code] Cost X-ray wrapper installed: claude-acp"
   [ "$ADDED_PATH" = true ] && echo "  ${C_DIM}[Claude Code] Added ~/.acp/bin to PATH (open a new terminal to pick it up)${C_RESET}"
+  fi # LOCAL_MODE=false (cost X-ray wrapper)
 
   INSTALLED="${INSTALLED:+$INSTALLED, }Claude Code"
 fi
@@ -738,7 +773,10 @@ if [ "$HAS_CODEX" = true ]; then
   # Authorization header reads ~/.acp/credentials at runtime — no install-
   # time API key needed, and credential rotation is automatic (overwrite
   # the file, restart Codex).
-  if ! grep -q "^\[mcp_servers\.acp\]" "$CODEX_TOML"; then
+  # Cloud-only: the MCP connector and the AGENTS.md acp_check directive both
+  # talk to the hosted gateway. --local wires neither — local mode must make
+  # zero network calls, so Codex gets hook coverage (shell commands) only.
+  if [ "$LOCAL_MODE" = false ] && ! grep -q "^\[mcp_servers\.acp\]" "$CODEX_TOML"; then
     cat >> "$CODEX_TOML" << 'MCPBLOCK'
 
 [mcp_servers.acp]
@@ -777,6 +815,7 @@ MCPBLOCK
   # to call acp_check before non-Bash tools (hooks only cover Bash today).
   # Idempotent: the ACP section is delimited by markers, so re-running
   # replaces only our section and preserves every other instruction.
+  if [ "$LOCAL_MODE" = false ]; then
   CODEX_AGENTS="$HOME/.codex/AGENTS.md"
   [ -f "$CODEX_AGENTS" ] || touch "$CODEX_AGENTS"
   node -e "
@@ -819,6 +858,9 @@ MCPBLOCK
   " "$CODEX_AGENTS"
   echo "  [Codex] AGENTS.md directive installed — Codex will call acp_check before non-Bash tools"
   echo "  ${C_GREEN}✓${C_RESET} [Codex] codex_hooks enabled + PreToolUse/PostToolUse hooks + MCP connector wired"
+  else
+  echo "  ${C_GREEN}✓${C_RESET} [Codex] codex_hooks enabled + PreToolUse/PostToolUse hooks (local: shell commands governed on-device)"
+  fi # LOCAL_MODE (Codex cloud wiring)
   INSTALLED="${INSTALLED:+$INSTALLED, }Codex"
 fi
 
@@ -854,6 +896,7 @@ POLICY
   echo ""
   echo "  ${C_GREEN}ALLOW${C_RESET}  local mode active — no account, nothing leaves your machine"
   echo "  ${C_DIM}Hooks installed for:${C_RESET} $INSTALLED"
+  [ "$HAS_CODEX" = true ] && echo "  ${C_DIM}Codex note: its hooks cover shell commands today; non-Bash tools aren't hooked by Codex yet.${C_RESET}"
   echo ""
   echo "  Decisions run on-device from ${C_DIM}~/.acp/policy.json${C_RESET} (edit it — allow / ask / deny)."
   echo "  Every call is logged to ${C_DIM}~/.acp/audit.jsonl${C_RESET}:"
