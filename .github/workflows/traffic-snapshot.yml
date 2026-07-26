@@ -1,0 +1,35 @@
+name: Traffic snapshot
+# GitHub only retains 14 days of traffic data, so we snapshot it weekly into
+# metrics/traffic.csv to build a durable history of installer-repo traction
+# (clones ≈ people pulling the installer source; views ≈ README reads).
+# Uses the built-in GITHUB_TOKEN, which can read its own repo's traffic.
+# Privacy-preserving: only GitHub's own aggregate counts, no per-user data.
+on:
+  schedule: [{ cron: "17 7 * * 1" }] # Mondays 07:17 UTC
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Append this week's traffic to metrics/traffic.csv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p metrics
+          f=metrics/traffic.csv
+          [ -f "$f" ] || echo "date,clones_total,clones_unique,views_total,views_unique,stars" > "$f"
+          date_utc=$(date -u +%Y-%m-%d)
+          clones=$(gh api repos/${{ github.repository }}/traffic/clones --jq '"\(.count),\(.uniques)"')
+          views=$(gh api repos/${{ github.repository }}/traffic/views --jq '"\(.count),\(.uniques)"')
+          stars=$(gh api repos/${{ github.repository }} --jq '.stargazers_count')
+          echo "$date_utc,$clones,$views,$stars" >> "$f"
+          if [ -n "$(git status --porcelain "$f")" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "$f"
+            git commit -m "chore: traffic snapshot $date_utc"
+            git push
+          fi
