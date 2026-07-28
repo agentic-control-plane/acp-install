@@ -1,0 +1,5 @@
+.home/
+draft.*
+take.log
+.setup-token-out
+*.frame.png
