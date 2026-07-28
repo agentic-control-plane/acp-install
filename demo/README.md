@@ -13,7 +13,9 @@ with `record.sh render` whenever the cast changes).
 
 ```bash
 demo/record.sh prep          # fresh sandbox HOME + tiny demo repo (local bare origin)
-demo/record.sh login-claude  # one-time /login inside the sandbox
+demo/record.sh login-claude  # one-time: `claude setup-token` flow — macOS keeps /login
+                             # OAuth in the Keychain, which the sandbox can't read, so
+                             # the rig uses a long-lived token stored 600 inside .home/
 demo/record.sh login-codex   # one-time; then run /hooks inside codex and TRUST the ACP hook
 demo/record.sh record        # automated take (or: manual — you drive, it records)
 demo/record.sh render        # demo.cast → acp-local-demo.gif (+ .mp4 for the site hero)
