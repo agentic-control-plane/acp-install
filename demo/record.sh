@@ -455,16 +455,29 @@ manual() {
 render() {
   need agg
   [ -f "$CAST" ] || die "no $CAST — record first"
-  # Idle compression keeps real waits honest but watchable; nothing about
-  # the content is altered.
+  # Trim the dead tail: killing the tmux session while recording appends an
+  # "[exited]" + screen-clear that becomes the GIF's final (blank) frame and
+  # loop point. Cut back to the last real content event and append a hold so
+  # the GIF ENDS and dwells on the audit receipt. Timing/dead-frame trimming
+  # only — no content is altered or reordered (the bright line).
+  local rcast="$CAST"
+  local cut; cut="$(grep -n 'exited' "$CAST" 2>/dev/null | head -1 | cut -d: -f1)"
+  if [ -n "$cut" ] && [ "$cut" -gt 3 ]; then
+    rcast="${CAST%.cast}.render.cast"
+    head -n "$((cut - 2))" "$CAST" > "$rcast"   # drop [exited] + the clear before it
+    printf '[3.5, "o", ""]\n' >> "$rcast"        # hold the final content frame
+  fi
+  # idle-time-limit 3 (not 2) lets the payoff pauses — the block and the audit
+  # receipt — breathe; speed 1.15 keeps the draggy agent-thinking middle tight.
   agg --font-size 16 \
-      --idle-time-limit 2 \
+      --idle-time-limit 3 \
       --speed 1.15 \
       --theme dracula \
-      "$CAST" "$GIF"
+      "$rcast" "$GIF"
+  [ "$rcast" != "$CAST" ] && rm -f "$rcast"
   say "GIF → $GIF ($(du -h "$GIF" | cut -f1))"
   if command -v gifsicle >/dev/null 2>&1; then
-    gifsicle -O3 --lossy=70 -o "$GIF.opt" "$GIF" && mv "$GIF.opt" "$GIF"
+    gifsicle -O3 --lossy=80 --colors 128 -o "$GIF.opt" "$GIF" && mv "$GIF.opt" "$GIF"
     say "optimized → $(du -h "$GIF" | cut -f1)"
   fi
   if command -v ffmpeg >/dev/null 2>&1; then
