@@ -2,7 +2,9 @@ name: Traffic snapshot
 # GitHub only retains 14 days of traffic data, so we snapshot it weekly into
 # metrics/traffic.csv to build a durable history of installer-repo traction
 # (clones ≈ people pulling the installer source; views ≈ README reads).
-# Uses the built-in GITHUB_TOKEN, which can read its own repo's traffic.
+# The /traffic/* endpoints are not accessible to the Actions GITHUB_TOKEN
+# ("Resource not accessible by integration"), so this needs TRAFFIC_PAT: a
+# fine-grained PAT for this repo with Administration: read + Contents: write.
 # Privacy-preserving: only GitHub's own aggregate counts, no per-user data.
 on:
   schedule: [{ cron: "17 7 * * 1" }] # Mondays 07:17 UTC
@@ -16,8 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Append this week's traffic to metrics/traffic.csv
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.TRAFFIC_PAT }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::TRAFFIC_PAT secret is not set — the traffic API rejects the built-in GITHUB_TOKEN. Create a fine-grained PAT (this repo only, Administration: read + Contents: write) and run: gh secret set TRAFFIC_PAT --repo ${{ github.repository }}"
+            exit 1
+          fi
           mkdir -p metrics
           f=metrics/traffic.csv
           [ -f "$f" ] || echo "date,clones_total,clones_unique,views_total,views_unique,stars" > "$f"
