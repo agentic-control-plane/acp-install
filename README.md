@@ -3,6 +3,11 @@
 > **Control the tool call, control the agent.**
 > See and stop what your coding agent actually does — every command, edit, and fetch — with one control layer that works the same across Claude Code, Cursor, and Codex. Free, on your machine, no account.
 
+<p align="center">
+  <img src="demo/acp-local-demo.gif" width="820" alt="Real terminal recording: one command installs ACP local mode with no signup; a coding agent's force-push to main is blocked by the safety floor, a network call has to ask, normal work runs and is logged — and the same policy stops Codex too. tail ~/.acp/audit.jsonl shows every call and its decision.">
+</p>
+<p align="center"><sub>Real recording, nothing mocked — <a href="demo/README.md">how it's made / re-record it yourself</a>. 60&nbsp;seconds: install → agent blocked → asked → allowed → the audit log.</sub></p>
+
 ```bash
 curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --local
 ```
