@@ -199,8 +199,13 @@ mkdir -p "$CONFIG_DIR"
 
 echo "  [ACP] Installing governance hook script..."
 GOVERN_RAW_URL="https://raw.githubusercontent.com/agentic-control-plane/claude-code-acp-plugin/main/bin/govern.mjs"
+# In --local mode the fetched copy must actually carry the local decision
+# path (runLocal). A canonical copy without it would exit silently on every
+# call — "local mode active" with zero governance and zero audit. Never
+# brick, never silently: such a copy is rejected in favor of the bundled one.
 if curl -sf --max-time 10 "$GOVERN_RAW_URL" -o "$CONFIG_DIR/govern.mjs.tmp" 2>/dev/null \
-   && head -1 "$CONFIG_DIR/govern.mjs.tmp" | grep -q "node"; then
+   && head -1 "$CONFIG_DIR/govern.mjs.tmp" | grep -q "node" \
+   && { [ "$LOCAL_MODE" = false ] || grep -q "runLocal" "$CONFIG_DIR/govern.mjs.tmp"; }; then
   mv "$CONFIG_DIR/govern.mjs.tmp" "$CONFIG_DIR/govern.mjs"
   GOVERN_SOURCE="canonical (plugin repo)"
 else
@@ -1034,6 +1039,12 @@ MCPBLOCK
   else
   echo "  ${C_GREEN}✓${C_RESET} [Codex] codex_hooks enabled + PreToolUse/PostToolUse hooks (local: shell commands governed on-device)"
   fi # LOCAL_MODE (Codex cloud wiring)
+  # Codex gates hooks behind a one-time review (its hook trust store):
+  # a hooks.json it hasn't been told to trust is listed but silently never
+  # run. There is no flag we could (or should) set for the user — the
+  # review is the point. Say it, loudly, or the hook is dead on arrival.
+  echo "  ${C_RED}!${C_RESET} [Codex] One-time step: run ${C_DIM}/hooks${C_RESET} inside Codex and trust the ACP hook."
+  echo "    Codex silently skips hooks it hasn't reviewed — until you do this, Codex is not governed."
   INSTALLED="${INSTALLED:+$INSTALLED, }Codex"
 fi
 
