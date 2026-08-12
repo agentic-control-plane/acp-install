@@ -1,7 +1,8 @@
 name: Mirror drift check
-# This repo's entire purpose is being the auditable mirror of the live
-# installer. Fail loudly whenever the served script diverges from the repo,
-# and run the local decision-engine fixtures on every change.
+# This repo is the SOURCE OF TRUTH for install.sh; the script served at
+# agenticcontrolplane.com/install.sh is a mirror synced from here. Fail
+# loudly whenever the served script diverges from the repo, and run the
+# local decision-engine fixtures on every change.
 on:
   push: { branches: [main] }
   pull_request: { branches: [main] }
@@ -30,7 +31,7 @@ jobs:
         run: |
           curl -sf https://agenticcontrolplane.com/install.sh -o /tmp/live.sh
           if ! diff -q install.sh /tmp/live.sh; then
-            echo "::error::install.sh in this repo differs from the live script — the 'auditable mirror' claim is false. Sync them."
+            echo "::error::the live script differs from install.sh in this repo (the source of truth) — re-sync the served mirror from this repo."
             diff install.sh /tmp/live.sh | head -40
             exit 1
           fi

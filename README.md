@@ -34,11 +34,11 @@ For whichever AI clients it detects:
    - Cursor: `~/.cursor/hooks.json`
    - Codex: `~/.codex/hooks.json`
 3. **For Codex only** — wires three layers:
-   - Enables `[features].codex_hooks = true` in `~/.codex/config.toml`
+   - Enables the hooks feature in `~/.codex/config.toml` (`[features].hooks = true` on Codex 0.145.0+, the deprecated `codex_hooks` alias on older builds)
    - Adds `[mcp_servers.acp]` for non-Bash tool governance via MCP (with runtime credential substitution — no API key in your dotfiles)
    - Writes an ACP section in `~/.codex/AGENTS.md` instructing Codex to call `acp_check` before non-Bash tool invocations
-4. **Opens a browser** for OAuth to provision an ACP workspace and mint an API key
-5. **Saves the key to `~/.acp/credentials`** (mode 0600)
+4. **Pairs this machine via device code** (RFC 8628): you approve a short code in a browser you're already signed into, and the script itself writes the key — nothing is pasted. If the device-code endpoint is unreachable, it falls back to the browser page + a manual one-liner.
+5. **Saves the key to `~/.acp/credentials`** (mode 0600). If the install ends with no usable key, it says so loudly and exits with code 2 — hooks without a key are a silent no-op, and the script refuses to call that success.
 6. **Installs the `claude-acp` cost-X-ray wrapper** (`~/.acp/bin`) and adds one marked PATH line (`# acp-installer`) to your shell rc
 
 In **`--local` mode**, steps 4–6 and every other piece of cloud wiring are skipped entirely: no OAuth, no MCP server, no cost wrapper, no shell-rc edits. Hooks + the on-device engine only. (Codex note: its hooks cover shell commands today; non-Bash Codex tools aren't hookable yet — in cloud mode the MCP connector covers them.)
@@ -53,7 +53,9 @@ The installer is **idempotent**: running it again upgrades existing entries in p
 - **Dry read**: `curl -sf https://agenticcontrolplane.com/install.sh | less`
 - **Commit history**: every change is here in this repo
 
-The canonical install URL is `agenticcontrolplane.com/install.sh` (served from the marketing site). This repo is the auditable mirror.
+### Source of truth
+
+**This repo is the canonical source of `install.sh`.** The copy served at `agenticcontrolplane.com/install.sh` (and any copy embedded in the marketing-site repo) is a **mirror** — it must be synced from this repo, never hand-edited. If the served script ever differs from `install.sh` here, that is a bug: the daily [mirror-drift check](.github/workflows/mirror-drift.yml) fails loudly until they match again. Fixes land here first, then propagate to the site.
 
 ## What this script will NOT do
 
@@ -73,7 +75,7 @@ rm -rf ~/.acp
 # - ~/.claude/settings.json        remove the "govern.mjs" entries under hooks.PreToolUse[] and hooks.PostToolUse[]
 # - ~/.cursor/hooks.json           remove the "govern.mjs" entries under hooks.preToolUse[] and hooks.postToolUse[]
 # - ~/.codex/hooks.json            remove the "govern.mjs" entries under hooks.PreToolUse[] and hooks.PostToolUse[]
-# - ~/.codex/config.toml           remove the [mcp_servers.acp] block and [features].codex_hooks line
+# - ~/.codex/config.toml           remove the [mcp_servers.acp] block and the [features] hooks line (hooks = true, or codex_hooks = true on older builds)
 # - ~/.codex/AGENTS.md             remove the block between <!-- acp:begin --> and <!-- acp:end --> markers
 # - ~/.zshrc / ~/.bashrc           remove the PATH line marked "# acp-installer" (cloud mode only)
 ```
