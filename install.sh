@@ -140,19 +140,68 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# DeepSeek Harness (dsh) — governed via its native plugin system, same
+# one-front-door rule as Hermes (David 2026-07-21: fold every harness into
+# the one-liner). Plugins are profile-scoped, so install into every existing
+# profile; `dsh plugin add` is idempotent (pnpm re-links the same package).
+# Fail-open: any refusal degrades to printing the manual command.
+HAS_DSH=false
+DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+if command -v dsh &> /dev/null || [ -d "$DSH_HOME_DIR/profiles" ]; then
+  HAS_DSH=true
+fi
+# Cloud-only like Hermes: dsh-plugin-acp needs a workspace credential; local
+# decisions aren't wired there yet.
+if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}DeepSeek Harness detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected DeepSeek Harness — installing the ACP plugin…"
+  DSH_PROFILES_INSTALLED=0
+  DSH_PROFILES_FAILED=0
+  if command -v dsh &> /dev/null && [ -d "$DSH_HOME_DIR/profiles" ]; then
+    for _dsh_prof in "$DSH_HOME_DIR"/profiles/*/; do
+      [ -d "$_dsh_prof" ] || continue
+      _dsh_prof_name="$(basename "$_dsh_prof")"
+      # The installation's shared node_modules dir is not a profile.
+      [ "$_dsh_prof_name" = "node_modules" ] && continue
+      if dsh plugin --profile "$_dsh_prof_name" add dsh-plugin-acp >/dev/null 2>&1; then
+        DSH_PROFILES_INSTALLED=$((DSH_PROFILES_INSTALLED + 1))
+      else
+        DSH_PROFILES_FAILED=$((DSH_PROFILES_FAILED + 1))
+      fi
+    done
+  fi
+  if [ "$DSH_PROFILES_INSTALLED" -gt 0 ] && [ "$DSH_PROFILES_FAILED" -eq 0 ]; then
+    echo "  ${C_GREEN}✓ DeepSeek Harness governed${C_RESET} — plugin added to $DSH_PROFILES_INSTALLED profile(s); active from the next dsh boot."
+  else
+    # No profiles yet, dsh not on PATH, or an add refused (dsh needs Node 22 —
+    # a Node 20 default breaks it). Print the manual path instead of guessing.
+    echo "  Couldn't finish automatically (no profiles yet, or dsh isn't on PATH here — note dsh needs Node 22)."
+    echo "  Run it against the profile you use:"
+    echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+    echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
+  fi
+  echo ""
+fi
+
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
 if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
   HAS_OPENCODE=true
 fi
 
 if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ]; then
-  # Hermes-only box: the plugin path above already handled it — success, not
-  # "nothing detected".
-  if [ "$HAS_HERMES" = true ]; then
+  # Hermes-only / dsh-only box: the plugin paths above already handled them —
+  # success, not "nothing detected".
+  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ]; then
+    _only_client="Hermes"
+    [ "$HAS_DSH" = true ] && _only_client="DeepSeek Harness"
+    [ "$HAS_HERMES" = true ] && [ "$HAS_DSH" = true ] && _only_client="Hermes and DeepSeek Harness"
     if [ "$LOCAL_MODE" = true ]; then
-      echo "  Hermes was the only client found — local mode doesn't govern Hermes yet; re-run without --local."
+      echo "  $_only_client was all we found — local mode doesn't govern these yet; re-run without --local."
     else
-      echo "  Hermes was the only client found — you're done here."
+      echo "  $_only_client was all we found — you're done here."
     fi
     exit 0
   fi
@@ -161,6 +210,9 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
   echo "  Hermes Agent? It has a native pip plugin instead:"
   echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
+  echo "  DeepSeek Harness? Same idea, its native plugin system:"
+  echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+  echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
   echo ""
   echo "  Install one first, then re-run this script."
   exit 1
