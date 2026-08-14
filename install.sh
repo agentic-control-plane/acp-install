@@ -886,6 +886,44 @@ if [ "$HAS_CLAUDE" = true ]; then
     echo "  ${C_GREEN}✓${C_RESET} [Claude Code] hooks + MCP registered directly (plugin CLI unavailable — update Claude Code for auto-updates)"
   fi
 
+  # ── Double-governance check (gatewaystack-connect#690) ───────────────
+  # A machine that ran the direct-wiring path AND has the marketplace
+  # plugin installed ends up with TWO PreToolUse hooks, each calling
+  # /govern/tool-use on every tool call. Found in the wild 2026-08-14: a
+  # v0.3.0 marketplace copy from April was still firing beside the current
+  # hook — doubling gateway load (and so the scale-out latency tail that
+  # turns a slow answer into a fail-closed deny), from a code path nobody
+  # had looked at in four months.
+  #
+  # We DETECT and REPORT rather than delete: hook wiring is governance
+  # config, and governance changes are the operator's to make, in every
+  # direction and regardless of intent (#403). Printing the exact command
+  # is the whole job here.
+  MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/agentic-control-plane/hooks/hooks.json"
+  SETTINGS_HAS_HOOK=false
+  if [ -f "$CLAUDE_SETTINGS" ] && grep -q "govern.mjs" "$CLAUDE_SETTINGS" 2>/dev/null; then
+    SETTINGS_HAS_HOOK=true
+  fi
+  if [ "$SETTINGS_HAS_HOOK" = true ] && [ -f "$MARKET_HOOKS" ]; then
+    MARKET_BIN="$HOME/.claude/plugins/marketplaces/agentic-control-plane/bin/govern.mjs"
+    MARKET_VER="unknown"
+    if [ -f "$MARKET_BIN" ]; then
+      MARKET_VER="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$MARKET_BIN" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
+      [ -z "$MARKET_VER" ] && MARKET_VER="pre-0.4 (no version marker)"
+    fi
+    echo ""
+    echo "  ${C_RED}! Double governance detected.${C_RESET} Two PreToolUse hooks are registered:"
+    echo "      1. $CLAUDE_SETTINGS            (this installer's, kept current)"
+    echo "      2. $MARKET_HOOKS   (marketplace plugin, version $MARKET_VER)"
+    echo "    Both call the gateway on every tool call. That doubles load and,"
+    echo "    if the plugin copy is stale, runs code you are not tracking."
+    echo "    Pick ONE — we don't edit hook config for you:"
+    echo "      keep the installer's (simplest):  claude plugin uninstall agentic-control-plane"
+    echo "      or keep the plugin's:             claude plugin update agentic-control-plane"
+    echo "                                        then remove the govern.mjs hook from $CLAUDE_SETTINGS"
+    echo ""
+  fi
+
   # ── Cost X-ray wrapper (pricing out of the box) ─────────────────────
   # Hooks govern tool calls but can't see model traffic. `claude-acp` also
   # routes MODEL calls through the ACP proxy so every session is priced
