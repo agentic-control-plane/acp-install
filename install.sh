@@ -899,12 +899,24 @@ if [ "$HAS_CLAUDE" = true ]; then
   # config, and governance changes are the operator's to make, in every
   # direction and regardless of intent (#403). Printing the exact command
   # is the whole job here.
-  MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/agentic-control-plane/hooks/hooks.json"
   SETTINGS_HAS_HOOK=false
   if [ -f "$CLAUDE_SETTINGS" ] && grep -q "govern.mjs" "$CLAUDE_SETTINGS" 2>/dev/null; then
     SETTINGS_HAS_HOOK=true
   fi
-  if [ "$SETTINGS_HAS_HOOK" = true ] && [ -f "$MARKET_HOOKS" ]; then
+  # Only an INSTALLED plugin contributes hooks. A marketplace directory is a
+  # catalog clone, not a registration — the first version of this check keyed
+  # on the hooks.json file being present and told a user to uninstall a plugin
+  # they did not have (2026-08-16, on the machine that motivated the check).
+  # Ask the plugin CLI; if it cannot answer, say nothing. A warning that tells
+  # someone to remove governance has to be certain before it speaks.
+  PLUGIN_INSTALLED=false
+  if command -v claude > /dev/null 2>&1; then
+    if claude plugin list 2>/dev/null | grep -q "agentic-control-plane"; then
+      PLUGIN_INSTALLED=true
+    fi
+  fi
+  if [ "$SETTINGS_HAS_HOOK" = true ] && [ "$PLUGIN_INSTALLED" = true ]; then
+    MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/agentic-control-plane/hooks/hooks.json"
     MARKET_BIN="$HOME/.claude/plugins/marketplaces/agentic-control-plane/bin/govern.mjs"
     MARKET_VER="unknown"
     if [ -f "$MARKET_BIN" ]; then
@@ -922,6 +934,30 @@ if [ "$HAS_CLAUDE" = true ]; then
     echo "      or keep the plugin's:             claude plugin update agentic-control-plane"
     echo "                                        then remove the govern.mjs hook from $CLAUDE_SETTINGS"
     echo ""
+  fi
+
+  # ── Marketplace config health ────────────────────────────────────────
+  # When the plugin CLI can't read its own marketplace registry, every
+  # `claude plugin` call fails and this installer silently falls back to
+  # direct hook wiring — while telling the user their Claude Code is too
+  # old, which is the wrong diagnosis and sends them to the wrong fix.
+  # A stale entry written by an older CLI (e.g. a local-path source whose
+  # schema has since changed) is the common cause. Report the real reason.
+  if command -v claude > /dev/null 2>&1; then
+    MARKET_ERR="$(claude plugin marketplace list 2>&1 > /dev/null)"
+    if [ -n "$MARKET_ERR" ] && echo "$MARKET_ERR" | grep -qi "corrupt\|invalid"; then
+      echo ""
+      echo "  ${C_RED}! The plugin CLI cannot read its marketplace registry.${C_RESET}"
+      echo "    ${C_DIM}${MARKET_ERR}${C_RESET}"
+      echo "    That is why plugin installs fell back to direct hook wiring above —"
+      echo "    your Claude Code is fine; the registry entry is stale. Governance IS"
+      echo "    active either way; you just don't get plugin auto-updates."
+      echo "    Fix (yours to run — we don't edit plugin config):"
+      echo "      claude plugin marketplace remove <the named marketplace>"
+      echo "      claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin"
+      echo "    Registry file: $HOME/.claude/plugins/known_marketplaces.json"
+      echo ""
+    fi
   fi
 
   # ── Cost X-ray wrapper (pricing out of the box) ─────────────────────
