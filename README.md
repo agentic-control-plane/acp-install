@@ -1,12 +1,18 @@
 # acp-install
 
 > **Control the tool call, control the agent.**
-> See and stop what your coding agent actually does — every command, edit, and fetch — with one control layer that works the same across Claude Code, Cursor, and Codex. Free, on your machine, no account.
+> See and stop what your coding agent actually does — every command, edit, and fetch — with one control layer that works the same across Claude Code, Cursor, and Codex. Free for individuals — connected console by default, or fully on-device with `--local`.
 
 <p align="center">
   <img src="demo/acp-local-demo.gif" width="820" alt="Real terminal recording: one command installs ACP local mode with no signup; a coding agent's force-push to main is blocked by the safety floor, a network call has to ask, normal work runs and is logged — and the same policy stops Codex too. tail ~/.acp/audit.jsonl shows every call and its decision.">
 </p>
 <p align="center"><sub>Real recording, nothing mocked — <a href="demo/README.md">how it's made / re-record it yourself</a>. 60&nbsp;seconds: install → agent blocked → asked → allowed → the audit log.</sub></p>
+
+```bash
+curl -sf https://agenticcontrolplane.com/install.sh | bash
+```
+
+Prefer fully on-device — no account, nothing leaves your machine? Add the flag:
 
 ```bash
 curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --local
@@ -15,10 +21,10 @@ curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --local
 One command. It detects whichever agents you run and puts the same guardrails in front of all of them:
 
 - **A safety floor nothing can cross** — `rm -rf /`, `mkfs`, `dd` to a disk, a fork bomb, a force-push to `main` are blocked regardless of your policy (and regardless of how the command is spelled).
-- **Your rules, one file** — `~/.acp/policy.json`: `allow` / `ask` / `deny` per tool, applied identically to every agent.
-- **A log of what actually happened** — `tail -f ~/.acp/audit.jsonl` and watch the calls your agent made, on-device. Nothing leaves your machine.
+- **Your rules, one place** — `allow` / `ask` / `deny` per tool, applied identically to every agent: the shared console (connected), or `~/.acp/policy.json` (`--local`).
+- **A log of what actually happened** — the live activity feed in the console, or in `--local` mode `tail -f ~/.acp/audit.jsonl`, fully on-device.
 
-The same policy that stops Claude Code stops Codex. You configure control once, not once per vendor. Outgrow on-device? Re-run without `--local` to connect a workspace — team control, cost X-ray, and a shared console across everyone's agents. The local runtime is the free individual on-ramp; the cloud is the team upgrade.
+The same policy that stops Claude Code stops Codex. You configure control once, not once per vendor. The default install connects a workspace — free for individuals — with the cost X-ray and a shared console across everyone's agents. `--local` is the fully-private on-device mode; re-run without the flag any time to connect.
 
 Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
 
