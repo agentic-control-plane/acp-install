@@ -186,33 +186,75 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# pi (earendil-works) — ships no permission system by design; governed via a
+# native TypeScript extension on its tool_call / tool_result events. Same
+# one-front-door rule. Extensions are files under ~/.pi/agent/extensions/;
+# the global path loads without a project-trust prompt, so governance is on
+# before any repo is opened. Fail-open: a fetch failure prints the manual path.
+HAS_PI=false
+PI_EXT_DIR="$HOME/.pi/agent/extensions"
+# The ~/.pi/agent dir is the reliable signal; `command -v pi` alone can match
+# an unrelated binary named pi, so require the dir when falling back to PATH.
+if [ -d "$HOME/.pi/agent" ] || { command -v pi &> /dev/null && [ -d "$HOME/.pi" ]; }; then
+  HAS_PI=true
+fi
+# Cloud-only like Hermes/dsh: the extension reads ~/.acp/credentials; local
+# decisions aren't wired there yet.
+if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}pi detected — skipped in --local mode (its ACP extension needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected pi — installing the ACP extension…"
+  PI_EXT_OK=false
+  if mkdir -p "$PI_EXT_DIR" 2>/dev/null && curl -sf \
+    https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts \
+    -o "$PI_EXT_DIR/acp.ts" 2>/dev/null && [ -s "$PI_EXT_DIR/acp.ts" ]; then
+    PI_EXT_OK=true
+  fi
+  if [ "$PI_EXT_OK" = true ]; then
+    echo "  ${C_GREEN}✓ pi governed${C_RESET} — extension written to ~/.pi/agent/extensions/acp.ts; active from the next pi session (needs Node 22)."
+  else
+    # Network refused or the extensions dir isn't writable — print the manual
+    # path rather than guessing.
+    echo "  Couldn't fetch automatically. Install it by hand:"
+    echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
+  fi
+  echo ""
+fi
+
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
 if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
   HAS_OPENCODE=true
 fi
 
 if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ]; then
-  # Hermes-only / dsh-only box: the plugin paths above already handled them —
-  # success, not "nothing detected".
-  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ]; then
-    _only_client="Hermes"
-    [ "$HAS_DSH" = true ] && _only_client="DeepSeek Harness"
-    [ "$HAS_HERMES" = true ] && [ "$HAS_DSH" = true ] && _only_client="Hermes and DeepSeek Harness"
+  # Hermes-only / dsh-only / pi-only box: the plugin paths above already
+  # handled them — success, not "nothing detected".
+  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ]; then
+    _found=""
+    [ "$HAS_HERMES" = true ] && _found="Hermes"
+    [ "$HAS_DSH" = true ] && _found="${_found:+$_found + }DeepSeek Harness"
+    [ "$HAS_PI" = true ] && _found="${_found:+$_found + }pi"
     if [ "$LOCAL_MODE" = true ]; then
-      echo "  $_only_client was all we found — local mode doesn't govern these yet; re-run without --local."
+      echo "  $_found was all we found — local mode doesn't govern these yet; re-run without --local."
     else
-      echo "  $_only_client was all we found — you're done here."
+      echo "  $_found was all we found — you're done here."
     fi
     exit 0
   fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi"
   echo "  Hermes Agent? It has a native pip plugin instead:"
   echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
   echo "  DeepSeek Harness? Same idea, its native plugin system:"
   echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
   echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
+  echo "  pi (earendil-works)? A native extension file:"
+  echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
+  echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
   echo ""
   echo "  Install one first, then re-run this script."
   exit 1
