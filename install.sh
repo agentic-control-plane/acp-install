@@ -439,6 +439,28 @@ async function handlePreToolUse() {
     if (!res.ok) { unreachable("HTTP " + res.status); return; }
     const data = await res.json();
     if (data.decision === "deny") deny(data.reason || "denied by policy");
+    // "ask" surfaces the approval to the harness. Codex has no ask
+    // primitive, so it blocks there instead (same mapping as the canonical
+    // plugin hook). Previously this branch was missing entirely and an ask
+    // verdict silently ALLOWED — the exact fell-open bug the gateway's
+    // step_up→deny change was shipped to kill.
+    if (data.decision === "ask") {
+      if (ACP_CLIENT === "codex") deny(data.reason || "requires approval");
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: `[ACP] ${data.reason || "requires approval"}`,
+        },
+      }));
+      process.exit(0);
+    }
+    // Unknown decision values fail CLOSED: a verdict this hook doesn't
+    // understand must never fall open. Distinct from the outage posture —
+    // the server answered; we just can't obey it correctly.
+    if (data.decision !== undefined && data.decision !== "allow") {
+      deny(`unrecognized decision "${data.decision}" — re-run the ACP installer to update this hook`);
+    }
     // Grace-zone billing warning: allowed call, loud message on every one.
     if (data.warning) {
       process.stdout.write(JSON.stringify({ systemMessage: `⚠ ${data.warning}` }));
