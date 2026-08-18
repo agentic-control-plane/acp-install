@@ -224,6 +224,52 @@ if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# Muse Code (Meta) — governed via its native plugin system (behind the
+# MUSE_EXPERIMENTAL_PLUGINS flag in the 0.2.1 beta; the flag gates only the
+# management CLI, approved hooks fire without it). Our npm package IS the
+# plugin bundle. Same one-front-door rule as Hermes/dsh/pi. Fail-open: any
+# refusal degrades to printing the manual commands.
+HAS_MUSE=false
+# The ~/.config/muse dir is the reliable signal; `command -v muse` alone could
+# match an unrelated binary, so require the config dir when falling back to PATH.
+if [ -d "$HOME/.config/muse" ] || { command -v muse &> /dev/null && [ -x "$HOME/.local/bin/muse" ]; }; then
+  HAS_MUSE=true
+fi
+# Cloud-only like Hermes/dsh/pi: Muse clears the hook environment, so the
+# plugin reads ~/.acp/credentials; local decisions aren't wired there yet.
+if [ "$HAS_MUSE" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Muse Code detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_MUSE" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Muse Code — installing the ACP plugin…"
+  MUSE_PLUGIN_OK=false
+  # npm global install, then install+approve the bundle into Muse. The
+  # experimental flag is required for the plugins CLI; approved hooks then run
+  # without it. All three steps must succeed to claim governed.
+  if npm install -g @agenticcontrolplane/muse-code >/dev/null 2>&1; then
+    _muse_pkg="$(npm root -g 2>/dev/null)/@agenticcontrolplane/muse-code"
+    if [ -d "$_muse_pkg" ] \
+      && MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins install "$_muse_pkg" --scope user >/dev/null 2>&1 \
+      && MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins approve acp >/dev/null 2>&1; then
+      MUSE_PLUGIN_OK=true
+    fi
+  fi
+  if [ "$MUSE_PLUGIN_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Muse Code governed${C_RESET} — plugin installed and approved; active from the next Muse session."
+    INSTALLED="${INSTALLED:+$INSTALLED, }Muse Code"
+  else
+    # npm/muse not on PATH here, or an install/approve step refused — print the
+    # manual commands rather than guessing.
+    echo "  Couldn't finish automatically (npm or muse not on PATH here, or a step refused). Run:"
+    echo "    npm install -g @agenticcontrolplane/muse-code"
+    echo "    MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins install \"\$(npm root -g)/@agenticcontrolplane/muse-code\" --scope user"
+    echo "    MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins approve acp"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/muse-code"
+  fi
+  echo ""
+fi
+
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
 if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
   HAS_OPENCODE=true

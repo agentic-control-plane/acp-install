@@ -1,0 +1,47 @@
+name: install.sh sync check
+
+# install.sh is MIRRORED, not authored here. The canonical copy is the one
+# served at https://agenticcontrolplane.com/install.sh (source: the
+# agenticcontrolplane.com marketing repo, where harness launches land). This
+# repo's copy must match it byte-for-byte. This job fails if they drift — in
+# either direction — so a change on one side can't silently ship without the
+# other. See SYNC.md.
+
+on:
+  push:
+    paths:
+      - install.sh
+      - .github/workflows/install-sync-check.yml
+  pull_request:
+    paths:
+      - install.sh
+  schedule:
+    # Daily at 07:13 UTC — catches a marketing-side deploy that wasn't mirrored
+    # here (off the :00 mark on purpose).
+    - cron: "13 7 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  compare-with-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Diff repo install.sh against the live canonical
+        run: |
+          set -euo pipefail
+          curl -fsS https://agenticcontrolplane.com/install.sh -o /tmp/live-install.sh
+          if diff -u /tmp/live-install.sh install.sh; then
+            echo "✓ install.sh matches the live canonical."
+          else
+            echo ""
+            echo "✗ DRIFT: this repo's install.sh differs from the live installer at"
+            echo "  https://agenticcontrolplane.com/install.sh (the canonical copy)."
+            echo ""
+            echo "  To resync this mirror from canonical:"
+            echo "    curl -fsS https://agenticcontrolplane.com/install.sh -o install.sh"
+            echo "    git add install.sh && git commit -m 'sync install.sh from canonical'"
+            echo ""
+            echo "  If the change originated HERE, land it in the marketing repo"
+            echo "  first (that is the source of truth) and deploy, then resync."
+            exit 1
+          fi
