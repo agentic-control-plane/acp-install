@@ -140,27 +140,167 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# DeepSeek Harness (dsh) — governed via its native plugin system, same
+# one-front-door rule as Hermes (David 2026-07-21: fold every harness into
+# the one-liner). Plugins are profile-scoped, so install into every existing
+# profile; `dsh plugin add` is idempotent (pnpm re-links the same package).
+# Fail-open: any refusal degrades to printing the manual command.
+HAS_DSH=false
+DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+if command -v dsh &> /dev/null || [ -d "$DSH_HOME_DIR/profiles" ]; then
+  HAS_DSH=true
+fi
+# Cloud-only like Hermes: dsh-plugin-acp needs a workspace credential; local
+# decisions aren't wired there yet.
+if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}DeepSeek Harness detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected DeepSeek Harness — installing the ACP plugin…"
+  DSH_PROFILES_INSTALLED=0
+  DSH_PROFILES_FAILED=0
+  if command -v dsh &> /dev/null && [ -d "$DSH_HOME_DIR/profiles" ]; then
+    for _dsh_prof in "$DSH_HOME_DIR"/profiles/*/; do
+      [ -d "$_dsh_prof" ] || continue
+      _dsh_prof_name="$(basename "$_dsh_prof")"
+      # The installation's shared node_modules dir is not a profile.
+      [ "$_dsh_prof_name" = "node_modules" ] && continue
+      if dsh plugin --profile "$_dsh_prof_name" add dsh-plugin-acp >/dev/null 2>&1; then
+        DSH_PROFILES_INSTALLED=$((DSH_PROFILES_INSTALLED + 1))
+      else
+        DSH_PROFILES_FAILED=$((DSH_PROFILES_FAILED + 1))
+      fi
+    done
+  fi
+  if [ "$DSH_PROFILES_INSTALLED" -gt 0 ] && [ "$DSH_PROFILES_FAILED" -eq 0 ]; then
+    echo "  ${C_GREEN}✓ DeepSeek Harness governed${C_RESET} — plugin added to $DSH_PROFILES_INSTALLED profile(s); active from the next dsh boot."
+  else
+    # No profiles yet, dsh not on PATH, or an add refused (dsh needs Node 22 —
+    # a Node 20 default breaks it). Print the manual path instead of guessing.
+    echo "  Couldn't finish automatically (no profiles yet, or dsh isn't on PATH here — note dsh needs Node 22)."
+    echo "  Run it against the profile you use:"
+    echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+    echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
+  fi
+  echo ""
+fi
+
+# pi (earendil-works) — ships no permission system by design; governed via a
+# native TypeScript extension on its tool_call / tool_result events. Same
+# one-front-door rule. Extensions are files under ~/.pi/agent/extensions/;
+# the global path loads without a project-trust prompt, so governance is on
+# before any repo is opened. Fail-open: a fetch failure prints the manual path.
+HAS_PI=false
+PI_EXT_DIR="$HOME/.pi/agent/extensions"
+# The ~/.pi/agent dir is the reliable signal; `command -v pi` alone can match
+# an unrelated binary named pi, so require the dir when falling back to PATH.
+if [ -d "$HOME/.pi/agent" ] || { command -v pi &> /dev/null && [ -d "$HOME/.pi" ]; }; then
+  HAS_PI=true
+fi
+# Cloud-only like Hermes/dsh: the extension reads ~/.acp/credentials; local
+# decisions aren't wired there yet.
+if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}pi detected — skipped in --local mode (its ACP extension needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected pi — installing the ACP extension…"
+  PI_EXT_OK=false
+  if mkdir -p "$PI_EXT_DIR" 2>/dev/null && curl -sf \
+    https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts \
+    -o "$PI_EXT_DIR/acp.ts" 2>/dev/null && [ -s "$PI_EXT_DIR/acp.ts" ]; then
+    PI_EXT_OK=true
+  fi
+  if [ "$PI_EXT_OK" = true ]; then
+    echo "  ${C_GREEN}✓ pi governed${C_RESET} — extension written to ~/.pi/agent/extensions/acp.ts; active from the next pi session (needs Node 22)."
+  else
+    # Network refused or the extensions dir isn't writable — print the manual
+    # path rather than guessing.
+    echo "  Couldn't fetch automatically. Install it by hand:"
+    echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
+  fi
+  echo ""
+fi
+
+# Muse Code (Meta) — governed via its native plugin system (behind the
+# MUSE_EXPERIMENTAL_PLUGINS flag in the 0.2.1 beta; the flag gates only the
+# management CLI, approved hooks fire without it). Our npm package IS the
+# plugin bundle. Same one-front-door rule as Hermes/dsh/pi. Fail-open: any
+# refusal degrades to printing the manual commands.
+HAS_MUSE=false
+# The ~/.config/muse dir is the reliable signal; `command -v muse` alone could
+# match an unrelated binary, so require the config dir when falling back to PATH.
+if [ -d "$HOME/.config/muse" ] || { command -v muse &> /dev/null && [ -x "$HOME/.local/bin/muse" ]; }; then
+  HAS_MUSE=true
+fi
+# Cloud-only like Hermes/dsh/pi: Muse clears the hook environment, so the
+# plugin reads ~/.acp/credentials; local decisions aren't wired there yet.
+if [ "$HAS_MUSE" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Muse Code detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_MUSE" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Muse Code — installing the ACP plugin…"
+  MUSE_PLUGIN_OK=false
+  # npm global install, then install+approve the bundle into Muse. The
+  # experimental flag is required for the plugins CLI; approved hooks then run
+  # without it. All three steps must succeed to claim governed.
+  if npm install -g @agenticcontrolplane/muse-code >/dev/null 2>&1; then
+    _muse_pkg="$(npm root -g 2>/dev/null)/@agenticcontrolplane/muse-code"
+    if [ -d "$_muse_pkg" ] \
+      && MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins install "$_muse_pkg" --scope user >/dev/null 2>&1 \
+      && MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins approve acp >/dev/null 2>&1; then
+      MUSE_PLUGIN_OK=true
+    fi
+  fi
+  if [ "$MUSE_PLUGIN_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Muse Code governed${C_RESET} — plugin installed and approved; active from the next Muse session."
+    INSTALLED="${INSTALLED:+$INSTALLED, }Muse Code"
+  else
+    # npm/muse not on PATH here, or an install/approve step refused — print the
+    # manual commands rather than guessing.
+    echo "  Couldn't finish automatically (npm or muse not on PATH here, or a step refused). Run:"
+    echo "    npm install -g @agenticcontrolplane/muse-code"
+    echo "    MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins install \"\$(npm root -g)/@agenticcontrolplane/muse-code\" --scope user"
+    echo "    MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins approve acp"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/muse-code"
+  fi
+  echo ""
+fi
+
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
 if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
   HAS_OPENCODE=true
 fi
 
 if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ]; then
-  # Hermes-only box: the plugin path above already handled it — success, not
-  # "nothing detected".
-  if [ "$HAS_HERMES" = true ]; then
+  # Hermes-only / dsh-only / pi-only box: the plugin paths above already
+  # handled them — success, not "nothing detected".
+  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ]; then
+    _found=""
+    [ "$HAS_HERMES" = true ] && _found="Hermes"
+    [ "$HAS_DSH" = true ] && _found="${_found:+$_found + }DeepSeek Harness"
+    [ "$HAS_PI" = true ] && _found="${_found:+$_found + }pi"
     if [ "$LOCAL_MODE" = true ]; then
-      echo "  Hermes was the only client found — local mode doesn't govern Hermes yet; re-run without --local."
+      echo "  $_found was all we found — local mode doesn't govern these yet; re-run without --local."
     else
-      echo "  Hermes was the only client found — you're done here."
+      echo "  $_found was all we found — you're done here."
     fi
     exit 0
   fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi"
   echo "  Hermes Agent? It has a native pip plugin instead:"
   echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
+  echo "  DeepSeek Harness? Same idea, its native plugin system:"
+  echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+  echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
+  echo "  pi (earendil-works)? A native extension file:"
+  echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
+  echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
   echo ""
   echo "  Install one first, then re-run this script."
   exit 1
@@ -199,8 +339,13 @@ mkdir -p "$CONFIG_DIR"
 
 echo "  [ACP] Installing governance hook script..."
 GOVERN_RAW_URL="https://raw.githubusercontent.com/agentic-control-plane/claude-code-acp-plugin/main/bin/govern.mjs"
+# In --local mode the fetched copy must actually carry the local decision
+# path (runLocal). A canonical copy without it would exit silently on every
+# call — "local mode active" with zero governance and zero audit. Never
+# brick, never silently: such a copy is rejected in favor of the bundled one.
 if curl -sf --max-time 10 "$GOVERN_RAW_URL" -o "$CONFIG_DIR/govern.mjs.tmp" 2>/dev/null \
-   && head -1 "$CONFIG_DIR/govern.mjs.tmp" | grep -q "node"; then
+   && head -1 "$CONFIG_DIR/govern.mjs.tmp" | grep -q "node" \
+   && { [ "$LOCAL_MODE" = false ] || grep -q "runLocal" "$CONFIG_DIR/govern.mjs.tmp"; }; then
   mv "$CONFIG_DIR/govern.mjs.tmp" "$CONFIG_DIR/govern.mjs"
   GOVERN_SOURCE="canonical (plugin repo)"
 else
@@ -208,7 +353,7 @@ else
   GOVERN_SOURCE="bundled fallback"
   cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
 #!/usr/bin/env node
-import { readFileSync, existsSync, appendFileSync } from "fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -222,8 +367,17 @@ const POST_HOOK_PAYLOAD_CEILING = 200 * 1024;
 
 function readToken() {
   if (process.env.ACP_BEARER_TOKEN) return process.env.ACP_BEARER_TOKEN;
-  try { return readFileSync(join(homedir(), ".acp", "credentials"), "utf8").trim(); }
-  catch { return null; }
+  // Both credential paths, in the same order as the plugin's
+  // bin/mcp-auth-headers.sh — these MUST stay in sync. When only proxy-key
+  // exists, MCP authenticates (the install looks healthy) while a
+  // credentials-only hook reads nothing and no-ops (#596).
+  for (const name of ["credentials", "proxy-key"]) {
+    try {
+      const value = readFileSync(join(homedir(), ".acp", name), "utf8").trim();
+      if (value) return value;
+    } catch { /* absent or unreadable — try the next path */ }
+  }
+  return null;
 }
 
 const ACP_DIR = join(homedir(), ".acp");
@@ -232,11 +386,11 @@ const token = readToken();
 // local policy exists or ACP_LOCAL=1. Decisions are made on-device by
 // decide.mjs against ~/.acp/policy.json; calls are logged to ~/.acp/audit.jsonl.
 const LOCAL = !token && (process.env.ACP_LOCAL === "1" || existsSync(join(ACP_DIR, "policy.json")));
-if (!token && !LOCAL) process.exit(0);
 
 // Read stdin via async iteration, not readFileSync("/dev/stdin"): on Linux a
 // non-blocking pipe makes the sync read throw EAGAIN, which would silently
-// skip governance for every call. (Caught by CI on ubuntu.)
+// skip governance for every call. (Caught by CI on ubuntu.) Read before the
+// no-credentials check so the warning can name the session and the tool.
 let input;
 try {
   process.stdin.setEncoding("utf8");
@@ -244,6 +398,31 @@ try {
   for await (const chunk of process.stdin) raw += chunk;
   input = JSON.parse(raw);
 } catch { process.exit(0); }
+
+// Wired but uncredentialed: never brick — but NEVER silently (#592). The
+// canonical bin/govern.mjs warns loudly here; this offline fallback must
+// match, or the no-network install path keeps the exact silent-ungoverned
+// hole the front-door fix closed. Banner once per session (marker-deduped);
+// a lapse.log line every call — the durable, auditable record of the gap.
+if (!token && !LOCAL) {
+  const sessionId = String(input?.session_id ?? "unknown");
+  try { mkdirSync(ACP_DIR, { recursive: true }); } catch { /* best-effort */ }
+  try {
+    appendFileSync(join(ACP_DIR, "lapse.log"),
+      `${new Date().toISOString()}\tUNGOVERNED\tno-credentials\tclient=${ACP_CLIENT}\tsession=${sessionId}\ttool=${input?.tool_name ?? "?"}\n`);
+  } catch { /* the lapse log is best-effort — never block a call on it */ }
+  let seen = false;
+  try { seen = readFileSync(join(ACP_DIR, "nocred-session"), "utf8").trim() === sessionId; } catch {}
+  if (!seen) {
+    try { writeFileSync(join(ACP_DIR, "nocred-session"), sessionId); } catch { /* at worst the banner repeats */ }
+    process.stdout.write(JSON.stringify({
+      systemMessage:
+        "[ACP] ⚠ UNGOVERNED: no API key found at ~/.acp/credentials — tool calls are running WITHOUT policy checks, and ACP has no record of them. " +
+        "Get your key at https://cloud.agenticcontrolplane.com, then: echo 'YOUR_API_KEY' > ~/.acp/credentials — and restart this session.",
+    }));
+  }
+  process.exit(0);
+}
 
 if (LOCAL) { await runLocal(input); process.exit(0); }
 
@@ -348,6 +527,28 @@ async function handlePreToolUse() {
     if (!res.ok) { unreachable("HTTP " + res.status); return; }
     const data = await res.json();
     if (data.decision === "deny") deny(data.reason || "denied by policy");
+    // "ask" surfaces the approval to the harness. Codex has no ask
+    // primitive, so it blocks there instead (same mapping as the canonical
+    // plugin hook). Previously this branch was missing entirely and an ask
+    // verdict silently ALLOWED — the exact fell-open bug the gateway's
+    // step_up→deny change was shipped to kill.
+    if (data.decision === "ask") {
+      if (ACP_CLIENT === "codex") deny(data.reason || "requires approval");
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: `[ACP] ${data.reason || "requires approval"}`,
+        },
+      }));
+      process.exit(0);
+    }
+    // Unknown decision values fail CLOSED: a verdict this hook doesn't
+    // understand must never fall open. Distinct from the outage posture —
+    // the server answered; we just can't obey it correctly.
+    if (data.decision !== undefined && data.decision !== "allow") {
+      deny(`unrecognized decision "${data.decision}" — re-run the ACP installer to update this hook`);
+    }
     // Grace-zone billing warning: allowed call, loud message on every one.
     if (data.warning) {
       process.stdout.write(JSON.stringify({ systemMessage: `⚠ ${data.warning}` }));
@@ -714,7 +915,7 @@ if [ "$HAS_CLAUDE" = true ]; then
       if (s.hooks) {
         const isGovernEntry = (e) =>
           Array.isArray(e.hooks) && e.hooks.some(h => typeof h.command === 'string' && h.command.includes('govern.mjs'));
-        for (const ev of ['PreToolUse', 'PostToolUse']) {
+        for (const ev of ['SessionStart', 'PreToolUse', 'PostToolUse']) {
           if (Array.isArray(s.hooks[ev])) s.hooks[ev] = s.hooks[ev].filter(e => !isGovernEntry(e));
         }
       }
@@ -736,6 +937,22 @@ if [ "$HAS_CLAUDE" = true ]; then
   else
     # Fallback for Claude Code CLIs without plugin-marketplace support:
     # direct hook wiring + user-scope MCP, exactly as before.
+    #
+    # SessionStart carries the paired-arrival attestation (/govern/attest,
+    # gatewaystack-connect#595) — the mechanism that proves a hook is really
+    # running. Only govern.mjs 0.9.0+ has a handler for it; older copies
+    # dispatch unknown events to handlePreToolUse, which would POST
+    # /govern/tool-use with an undefined tool_name at every session start
+    # (why #40's unconditional wiring was reverted in #41). So probe the
+    # copy actually written to THIS machine: govern.mjs is fetched from the
+    # plugin repo at install time, so the day a handleSessionStart ships
+    # there, fresh installs start attesting with no installer release — and
+    # the bundled offline fallback (no handler) stays safely un-wired.
+    if grep -q "handleSessionStart" "$CONFIG_DIR/govern.mjs" 2>/dev/null; then
+      ACP_FALLBACK_EVENTS="['SessionStart', 'PreToolUse', 'PostToolUse']"
+    else
+      ACP_FALLBACK_EVENTS="['PreToolUse', 'PostToolUse']"
+    fi
     node -e "
       const fs = require('fs');
       const p = process.argv[1];
@@ -749,9 +966,16 @@ if [ "$HAS_CLAUDE" = true ]; then
       function isGovernEntry(e) {
         return Array.isArray(e.hooks) && e.hooks.some(h => typeof h.command === 'string' && h.command.includes('govern.mjs'));
       }
-      for (const ev of ['PreToolUse', 'PostToolUse']) {
+      // Which events to wire is decided in bash above (ACP_FALLBACK_EVENTS):
+      // SessionStart only when the installed govern.mjs actually has a
+      // handleSessionStart (0.9.0+). Stale SessionStart govern entries are
+      // cleaned up either way — but never invent an empty hooks array for
+      // an event we neither had nor wire.
+      const events = ${ACP_FALLBACK_EVENTS};
+      for (const ev of ['SessionStart', 'PreToolUse', 'PostToolUse']) {
+        if (!events.includes(ev) && !Array.isArray(s.hooks[ev])) continue;
         s.hooks[ev] = (Array.isArray(s.hooks[ev]) ? s.hooks[ev] : []).filter(e => !isGovernEntry(e));
-        s.hooks[ev].push(hookEntry);
+        if (events.includes(ev)) s.hooks[ev].push(hookEntry);
       }
       fs.writeFileSync(p, JSON.stringify(s, null, 2));
     " "$CLAUDE_SETTINGS"
@@ -770,6 +994,80 @@ if [ "$HAS_CLAUDE" = true ]; then
       fs.writeFileSync(p, JSON.stringify(c, null, 2));
     " "$CLAUDE_JSON"
     echo "  ${C_GREEN}✓${C_RESET} [Claude Code] hooks + MCP registered directly (plugin CLI unavailable — update Claude Code for auto-updates)"
+  fi
+
+  # ── Double-governance check (gatewaystack-connect#690) ───────────────
+  # A machine that ran the direct-wiring path AND has the marketplace
+  # plugin installed ends up with TWO PreToolUse hooks, each calling
+  # /govern/tool-use on every tool call. Found in the wild 2026-08-14: a
+  # v0.3.0 marketplace copy from April was still firing beside the current
+  # hook — doubling gateway load (and so the scale-out latency tail that
+  # turns a slow answer into a fail-closed deny), from a code path nobody
+  # had looked at in four months.
+  #
+  # We DETECT and REPORT rather than delete: hook wiring is governance
+  # config, and governance changes are the operator's to make, in every
+  # direction and regardless of intent (#403). Printing the exact command
+  # is the whole job here.
+  SETTINGS_HAS_HOOK=false
+  if [ -f "$CLAUDE_SETTINGS" ] && grep -q "govern.mjs" "$CLAUDE_SETTINGS" 2>/dev/null; then
+    SETTINGS_HAS_HOOK=true
+  fi
+  # Only an INSTALLED plugin contributes hooks. A marketplace directory is a
+  # catalog clone, not a registration — the first version of this check keyed
+  # on the hooks.json file being present and told a user to uninstall a plugin
+  # they did not have (2026-08-16, on the machine that motivated the check).
+  # Ask the plugin CLI; if it cannot answer, say nothing. A warning that tells
+  # someone to remove governance has to be certain before it speaks.
+  PLUGIN_INSTALLED=false
+  if command -v claude > /dev/null 2>&1; then
+    if claude plugin list 2>/dev/null | grep -q "agentic-control-plane"; then
+      PLUGIN_INSTALLED=true
+    fi
+  fi
+  if [ "$SETTINGS_HAS_HOOK" = true ] && [ "$PLUGIN_INSTALLED" = true ]; then
+    MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/agentic-control-plane/hooks/hooks.json"
+    MARKET_BIN="$HOME/.claude/plugins/marketplaces/agentic-control-plane/bin/govern.mjs"
+    MARKET_VER="unknown"
+    if [ -f "$MARKET_BIN" ]; then
+      MARKET_VER="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$MARKET_BIN" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
+      [ -z "$MARKET_VER" ] && MARKET_VER="pre-0.4 (no version marker)"
+    fi
+    echo ""
+    echo "  ${C_RED}! Double governance detected.${C_RESET} Two PreToolUse hooks are registered:"
+    echo "      1. $CLAUDE_SETTINGS            (this installer's, kept current)"
+    echo "      2. $MARKET_HOOKS   (marketplace plugin, version $MARKET_VER)"
+    echo "    Both call the gateway on every tool call. That doubles load and,"
+    echo "    if the plugin copy is stale, runs code you are not tracking."
+    echo "    Pick ONE — we don't edit hook config for you:"
+    echo "      keep the installer's (simplest):  claude plugin uninstall agentic-control-plane"
+    echo "      or keep the plugin's:             claude plugin update agentic-control-plane"
+    echo "                                        then remove the govern.mjs hook from $CLAUDE_SETTINGS"
+    echo ""
+  fi
+
+  # ── Marketplace config health ────────────────────────────────────────
+  # When the plugin CLI can't read its own marketplace registry, every
+  # `claude plugin` call fails and this installer silently falls back to
+  # direct hook wiring — while telling the user their Claude Code is too
+  # old, which is the wrong diagnosis and sends them to the wrong fix.
+  # A stale entry written by an older CLI (e.g. a local-path source whose
+  # schema has since changed) is the common cause. Report the real reason.
+  if command -v claude > /dev/null 2>&1; then
+    MARKET_ERR="$(claude plugin marketplace list 2>&1 > /dev/null)"
+    if [ -n "$MARKET_ERR" ] && echo "$MARKET_ERR" | grep -qi "corrupt\|invalid"; then
+      echo ""
+      echo "  ${C_RED}! The plugin CLI cannot read its marketplace registry.${C_RESET}"
+      echo "    ${C_DIM}${MARKET_ERR}${C_RESET}"
+      echo "    That is why plugin installs fell back to direct hook wiring above —"
+      echo "    your Claude Code is fine; the registry entry is stale. Governance IS"
+      echo "    active either way; you just don't get plugin auto-updates."
+      echo "    Fix (yours to run — we don't edit plugin config):"
+      echo "      claude plugin marketplace remove <the named marketplace>"
+      echo "      claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin"
+      echo "    Registry file: $HOME/.claude/plugins/known_marketplaces.json"
+      echo ""
+    fi
   fi
 
   # ── Cost X-ray wrapper (pricing out of the box) ─────────────────────
@@ -911,36 +1209,54 @@ fi
 if [ "$HAS_CODEX" = true ]; then
   echo "  [Codex] Setting up governance hooks..."
 
-  # Codex hooks are feature-flagged off by default (marked
-  # Stage::UnderDevelopment in the Codex source). Flip [features].codex_hooks
-  # in ~/.codex/config.toml. Note: PreToolUse in Codex only intercepts
-  # the Bash tool today; non-Bash tools need the MCP connector path,
-  # documented separately at /integrations/codex.
+  # Enable the hooks feature in ~/.codex/config.toml. The flag was renamed:
+  # `codex_hooks` was the original (Stage::UnderDevelopment, off by default),
+  # and `hooks` is canonical from 0.145.0 onward — Stable and default-enabled,
+  # with `codex_hooks` kept as a deprecated alias that warns on every launch.
+  # Writing the wrong one is not cosmetic in either direction: `hooks` on an
+  # old build is an unknown key (hooks stay off, governance dark), and
+  # `codex_hooks` on a new build nags the user forever. So detect and pick.
+  #
+  # Non-Bash tools are unhooked on every version; they go through the MCP
+  # connector plus the AGENTS.md directive below. See /integrations/codex.
   CODEX_TOML="$HOME/.codex/config.toml"
   mkdir -p "$HOME/.codex"
   [ -f "$CODEX_TOML" ] || touch "$CODEX_TOML"
 
-  # Idempotent: only modify config.toml if codex_hooks isn't already set.
+  # "codex-cli 0.145.0" -> "0.145.0"; empty if codex isn't runnable.
+  CODEX_VER="$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+
+  # Idempotent: only touch config.toml if the right flag isn't already set.
   # Uses node for string manipulation; avoids a TOML parser dependency.
   node -e "
     const fs = require('fs');
     const p = process.argv[1];
+    const ver = process.argv[2] || '';
+    // Unknown version => assume old build and keep the alias. It warns but
+    // works on new builds; the canonical key would silently no-op on old ones.
+    // Governance staying ON is worth a deprecation notice.
+    const parts = ver.split('.').map(Number);
+    const canonical = parts.length === 3 && !parts.some(isNaN) &&
+      (parts[0] > 0 || parts[1] > 145 || (parts[1] === 145 && parts[2] >= 0));
+    const key = canonical ? 'hooks' : 'codex_hooks';
     let src = '';
     try { src = fs.readFileSync(p, 'utf8'); } catch {}
-    const hasFlag = /^\s*codex_hooks\s*=\s*true\s*\$/m.test(src);
-    if (!hasFlag) {
-      const hasFeatures = /^\[features\]\s*\$/m.test(src);
-      if (hasFeatures) {
-        // Insert codex_hooks = true on the line after [features]
-        src = src.replace(/^(\[features\]\s*)\$/m, '\$1\ncodex_hooks = true');
-      } else {
-        // Append a new [features] section
-        if (src.length && !src.endsWith('\n')) src += '\n';
-        src += '\n[features]\ncodex_hooks = true\n';
-      }
-      fs.writeFileSync(p, src);
+    const wanted = new RegExp('^\\\\s*' + key + '\\\\s*=\\\\s*true\\\\s*\$', 'm');
+    if (wanted.test(src)) process.exit(0);
+    // On a canonical build, retire the deprecated alias rather than stacking
+    // both keys — two sources of truth is how the nag survives an 'upgrade'.
+    if (canonical) src = src.replace(/^[ \t]*codex_hooks[ \t]*=[ \t]*true[ \t]*\r?\n?/m, '');
+    // Match the header line only — never the newline after it, or the insert
+    // re-adds one and leaves a blank line behind.
+    if (/^\[features\][ \t]*\r?\$/m.test(src)) {
+      src = src.replace(/^(\[features\][ \t]*)\r?\$/m, '\$1\n' + key + ' = true');
+    } else {
+      if (src.length && !src.endsWith('\n')) src += '\n';
+      src += (src.length ? '\n' : '') + '[features]\n' + key + ' = true\n';
     }
-  " "$CODEX_TOML"
+    if (!src.endsWith('\n')) src += '\n';
+    fs.writeFileSync(p, src);
+  " "$CODEX_TOML" "$CODEX_VER"
 
   # Add [mcp_servers.acp] block if not present. Uses sh -c so the
   # Authorization header reads ~/.acp/credentials at runtime — no install-
@@ -959,6 +1275,14 @@ MCPBLOCK
   fi
 
   # Register Pre- and Post-ToolUse hooks in ~/.codex/hooks.json.
+  #
+  # ACP_HARNESS=codex is load-bearing, not decoration. govern.mjs branches on
+  # it twice: (1) Codex has no `ask` semantic on the wire and acts on `deny`
+  # only, so an ask must be emitted as deny-plus-approval-link or the human
+  # gate silently passes through as allowed; (2) Codex rejects `updatedInput`,
+  # so the scoped-token injection path must be skipped or the hook is marked
+  # failed and the tool runs anyway, minus the token. Without this var
+  # govern.mjs defaults to HARNESS=claude-code and does neither.
   # Same JSON shape as Claude Code settings.json.
   CODEX_HOOKS="$HOME/.codex/hooks.json"
   [ -f "$CODEX_HOOKS" ] || echo '{}' > "$CODEX_HOOKS"
@@ -970,7 +1294,7 @@ MCPBLOCK
     s.hooks = s.hooks || {};
     const hookEntry = {
       matcher: '.*',
-      hooks: [{ type: 'command', command: 'env ACP_CLIENT=codex node \$HOME/.acp/govern.mjs', timeout: 5 }]
+      hooks: [{ type: 'command', command: 'env ACP_CLIENT=codex ACP_HARNESS=codex node \$HOME/.acp/govern.mjs', timeout: 5 }]
     };
     function isGovernEntry(e) {
       return Array.isArray(e.hooks) && e.hooks.some(h => typeof h.command === 'string' && h.command.includes('govern.mjs'));
@@ -1030,10 +1354,17 @@ MCPBLOCK
     fs.writeFileSync(p, src);
   " "$CODEX_AGENTS"
   echo "  [Codex] AGENTS.md directive installed — Codex will call acp_check before non-Bash tools"
-  echo "  ${C_GREEN}✓${C_RESET} [Codex] codex_hooks enabled + PreToolUse/PostToolUse hooks + MCP connector wired"
+  echo "  ${C_GREEN}✓${C_RESET} [Codex] hooks feature enabled + PreToolUse/PostToolUse hooks + MCP connector wired"
   else
-  echo "  ${C_GREEN}✓${C_RESET} [Codex] codex_hooks enabled + PreToolUse/PostToolUse hooks (local: shell commands governed on-device)"
+  echo "  ${C_GREEN}✓${C_RESET} [Codex] hooks feature enabled + PreToolUse/PostToolUse hooks (local: shell commands governed on-device)"
   fi # LOCAL_MODE (Codex cloud wiring)
+  # Codex gates hooks behind a one-time review (its hook trust store):
+  # a hooks.json it hasn't been told to trust is listed but silently never
+  # run. There is no flag we could (or should) set for the user — the
+  # review is the point. Say it, loudly, or the hook is dead on arrival.
+  echo "  ${C_RED}!${C_RESET} [Codex] One-time step: run ${C_DIM}/hooks${C_RESET} inside Codex and trust the ACP hook."
+  echo "    Codex silently skips hooks it hasn't reviewed — until you do this, Codex is not governed."
+  echo "    Re-run this installer and you must trust it again — the hash covers the hook command."
   INSTALLED="${INSTALLED:+$INSTALLED, }Codex"
 fi
 
@@ -1161,20 +1492,6 @@ if [ -f "$CREDS_FILE" ]; then
   CREDS_BEFORE="$(cat "$CREDS_FILE" 2>/dev/null || true)"
 fi
 
-echo "  Opening browser to log in and set up your workspace..."
-echo ""
-
-AUTH_URL="$DASHBOARD_BASE/plugin/authorize?setup=cli"
-if command -v open &> /dev/null; then
-  open "$AUTH_URL"
-elif command -v xdg-open &> /dev/null; then
-  xdg-open "$AUTH_URL"
-else
-  echo "  Open this URL in your browser:"
-  echo "  $AUTH_URL"
-  echo ""
-fi
-
 # ── Done ──────────────────────────────────────────────────────────────
 
 echo ""
@@ -1182,32 +1499,118 @@ echo "  ━━━━━━━━━━━━━━━━━━━━━━━━
 echo "  Hooks installed for: $INSTALLED"
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "  Complete setup in the browser. After logging in, the page"
-echo "  will show your API key. Save it with:"
-echo ""
-echo "    echo 'YOUR_API_KEY' > ~/.acp/credentials"
-echo ""
 
-# ── Verify: wait for the key, then check it against the gateway ──────
-# Best-effort success moment: poll up to 30s for ~/.acp/credentials to
-# appear (or change, on reconfigure), then validate the key with one
-# read-only request. Nothing here blocks or changes the install — on
-# timeout the manual path above still works.
+# ── Get the key ONTO THIS MACHINE (device code, RFC 8628) ─────────────
+# April's c099916 removed the token paste on the grounds that "browser
+# handles provisioning now". Provisioning did move to the browser — but a
+# web page cannot write ~/.acp/credentials, so *delivery* silently became a
+# human copy-paste, and anyone who closed the tab ended up with hooks and no
+# key. Device code closes that: the human approves a short code in a browser
+# they're already signed into, and THIS SCRIPT writes the key. Nothing is
+# ever pasted, so nothing depends on shell quoting (which is what made the
+# original paste flow unfixable on Windows and in curl|bash).
 KEY_SEEN=false
-printf "  %sWaiting for your API key (up to 30s; Ctrl+C skips — hooks are already installed)%s " "$C_DIM" "$C_RESET"
-for _ in $(seq 1 30); do
-  CREDS_NOW=""
-  if [ -f "$CREDS_FILE" ]; then
-    CREDS_NOW="$(cat "$CREDS_FILE" 2>/dev/null || true)"
+ACP_UNGOVERNED=false
+DEVICE_BUDGET=300   # seconds; the code itself lives longer, but a curl|bash
+                    # must not hang indefinitely if the user walks away.
+
+DEVICE_INFO="$(node -e '
+  const API = process.argv[1];
+  (async () => {
+    try {
+      const r = await fetch(API + "/device/code", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      if (!r.ok) process.exit(1);
+      const d = await r.json();
+      if (!d.device_code || !d.user_code) process.exit(1);
+      process.stdout.write([
+        d.user_code,
+        d.verification_uri_complete || d.verification_uri,
+        d.device_code,
+        d.interval || 5,
+      ].join("\t"));
+    } catch { process.exit(1); }
+  })();
+' "$API_BASE" 2>/dev/null || true)"
+
+USER_CODE="$(printf "%s" "$DEVICE_INFO" | cut -f1)"
+VERIFY_URL="$(printf "%s" "$DEVICE_INFO" | cut -f2)"
+DEVICE_CODE="$(printf "%s" "$DEVICE_INFO" | cut -f3)"
+DEVICE_INTERVAL="$(printf "%s" "$DEVICE_INFO" | cut -f4)"
+
+if [ -n "$DEVICE_CODE" ]; then
+  echo "  Approve this machine — your code is:"
+  echo ""
+  echo "      ${C_GREEN}$USER_CODE${C_RESET}"
+  echo ""
+  if command -v open &> /dev/null; then
+    open "$VERIFY_URL" 2>/dev/null || true
+    echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
+  elif command -v xdg-open &> /dev/null; then
+    xdg-open "$VERIFY_URL" 2>/dev/null || true
+    echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
+  else
+    echo "  Approve at: $VERIFY_URL"
   fi
-  if [ -n "$CREDS_NOW" ] && [ "$CREDS_NOW" != "$CREDS_BEFORE" ]; then
+  echo ""
+  printf "  %sWaiting for approval (up to %ss; Ctrl+C is safe — re-run any time)%s " \
+    "$C_DIM" "$DEVICE_BUDGET" "$C_RESET"
+
+  # Writes the key itself on success. Progress goes to stderr so stdout
+  # stays clean for anything piping this installer.
+  if node -e '
+    const fs = require("fs");
+    const [API, deviceCode, credsFile, budget, interval] = process.argv.slice(1);
+    const deadline = Date.now() + Number(budget) * 1000;
+    let wait = Number(interval) * 1000;
+    (async () => {
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, wait));
+        let res, body;
+        try {
+          res = await fetch(API + "/device/token", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ device_code: deviceCode }),
+          });
+          body = await res.json();
+        } catch { process.stderr.write("~"); continue; }
+        if (res.ok && typeof body.apiKey === "string" && body.apiKey.trim()) {
+          fs.writeFileSync(credsFile, body.apiKey.trim() + "\n", { mode: 0o600 });
+          try { fs.chmodSync(credsFile, 0o600); } catch {}
+          process.exit(0);
+        }
+        if (body && body.error === "slow_down") { wait += 5000; process.stderr.write("_"); continue; }
+        if (body && body.error === "authorization_pending") { process.stderr.write("."); continue; }
+        process.exit(1);   // expired_token, access_denied, anything unexpected
+      }
+      process.exit(1);
+    })();
+  ' "$API_BASE" "$DEVICE_CODE" "$CREDS_FILE" "$DEVICE_BUDGET" "$DEVICE_INTERVAL"; then
     KEY_SEEN=true
-    break
   fi
-  printf "."
-  sleep 1
-done
-# Reconfigure edge: key unchanged after 30s but present — verify it anyway.
+else
+  # Never brick: if /device/code is unreachable, fall back to the browser
+  # page and the manual one-liner rather than leaving the user with nothing.
+  AUTH_URL="$DASHBOARD_BASE/plugin/authorize?setup=cli"
+  if command -v open &> /dev/null; then
+    open "$AUTH_URL" 2>/dev/null || true
+  elif command -v xdg-open &> /dev/null; then
+    xdg-open "$AUTH_URL" 2>/dev/null || true
+  fi
+  echo "  ${C_DIM}Automatic setup unavailable — finish in the browser:${C_RESET}"
+  echo "  $AUTH_URL"
+  echo ""
+  echo "  Then save the key it shows you:"
+  echo ""
+  echo "    echo 'YOUR_API_KEY' > ~/.acp/credentials"
+fi
+
+# Reconfigure edge: approval didn't complete but a key was already here —
+# verify that one rather than declaring the machine ungoverned.
 if [ "$KEY_SEEN" = false ] && [ -n "$CREDS_BEFORE" ]; then
   KEY_SEEN=true
 fi
@@ -1262,8 +1665,25 @@ if [ "$KEY_SEEN" = true ]; then
     echo "  ${C_DIM}then confirm your first calls at${C_RESET} $DASHBOARD_BASE/activity"
   fi
 else
-  echo "  ${C_DIM}No key after 30s — that's fine. Finish in the browser, save the key${C_RESET}"
-  echo "  ${C_DIM}with the command above, then check${C_RESET} $DASHBOARD_BASE/activity"
+  # Not fine. Hooks without a key are a silent no-op: govern.mjs finds no
+  # token and lets every call through without a policy check or an audit
+  # row, and the server cannot tell that machine apart from one that never
+  # installed. Saying "that's fine" here is what left real users believing
+  # they were governed while they weren't (gatewaystack-connect#594).
+  ACP_UNGOVERNED=true
+  echo "  ${C_RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+  echo "  ${C_RED}!  NOT GOVERNED YET — no API key saved${C_RESET}"
+  echo "  ${C_RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+  echo ""
+  echo "  The hooks are installed, but with no key they cannot reach ACP."
+  echo "  Until you save one, every tool call runs UNCHECKED and nothing is"
+  echo "  audited. This install is not protecting you yet."
+  echo ""
+  echo "  Finish logging in, then run:"
+  echo ""
+  echo "    echo 'YOUR_API_KEY' > ~/.acp/credentials"
+  echo ""
+  echo "  Then restart your agent and confirm at $DASHBOARD_BASE/activity"
 fi
 echo ""
 if [ "$HAS_CLAUDE" = true ]; then
@@ -1284,3 +1704,11 @@ if [ "$HAS_OPENCLAW" = true ]; then
   echo "  Then restart OpenClaw to activate the plugin"
 fi
 echo ""
+
+# Exit non-zero when the install finished without a usable key, so the state
+# is detectable by a wrapper, a CI check, or the user's shell — not only by
+# reading the banner. Distinct code (2) so it is not confused with a crash.
+if [ "${ACP_UNGOVERNED:-false}" = true ]; then
+  exit 2
+fi
+exit 0
