@@ -270,6 +270,43 @@ if [ "$HAS_MUSE" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# Grok Build (xAI) — hooks register user-globally in ~/.grok/hooks/*.json (no
+# trust prompt). Two raw-file fetches: the hook itself into ~/.acp/hooks and
+# the registration JSON into ~/.grok/hooks. NOTE: Grok also auto-loads hooks
+# from ~/.claude/settings.json but doesn't parse Claude's output vocabulary,
+# so the Claude hook alone would fire and be ignored — this purpose-built hook
+# is the governed path. Fail-open: any refusal prints the manual commands.
+HAS_GROK=false
+if [ -d "$HOME/.grok" ] || command -v grok &> /dev/null; then
+  HAS_GROK=true
+fi
+# Cloud-only like Hermes/dsh/pi/Muse: the hook reads ~/.acp/credentials.
+if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Grok Build detected — skipped in --local mode (its ACP hook needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Grok Build — installing the ACP hook…"
+  GROK_HOOK_OK=false
+  _grok_raw="https://raw.githubusercontent.com/agentic-control-plane/grok-build-acp-plugin/main"
+  if mkdir -p "$HOME/.acp/hooks/grok-build" "$HOME/.grok/hooks" 2>/dev/null \
+    && curl -fsSL "$_grok_raw/hook.mjs" -o "$HOME/.acp/hooks/grok-build/hook.mjs" 2>/dev/null \
+    && curl -fsSL "$_grok_raw/hooks/acp.json" -o "$HOME/.grok/hooks/acp.json" 2>/dev/null; then
+    GROK_HOOK_OK=true
+  fi
+  if [ "$GROK_HOOK_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Grok Build governed${C_RESET} — hook registered user-globally; fires in every mode, always-approve included; active from the next Grok session."
+    INSTALLED="${INSTALLED:+$INSTALLED, }Grok Build"
+  else
+    echo "  Couldn't finish automatically (curl refused or a directory wasn't writable). Run:"
+    echo "    mkdir -p ~/.acp/hooks/grok-build ~/.grok/hooks"
+    echo "    curl -fsSL $_grok_raw/hook.mjs -o ~/.acp/hooks/grok-build/hook.mjs"
+    echo "    curl -fsSL $_grok_raw/hooks/acp.json -o ~/.grok/hooks/acp.json"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/grok-build"
+  fi
+  echo ""
+fi
+
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
 if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
   HAS_OPENCODE=true
@@ -278,11 +315,13 @@ fi
 if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ]; then
   # Hermes-only / dsh-only / pi-only box: the plugin paths above already
   # handled them — success, not "nothing detected".
-  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ]; then
+  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ] || [ "$HAS_MUSE" = true ] || [ "$HAS_GROK" = true ]; then
     _found=""
     [ "$HAS_HERMES" = true ] && _found="Hermes"
     [ "$HAS_DSH" = true ] && _found="${_found:+$_found + }DeepSeek Harness"
     [ "$HAS_PI" = true ] && _found="${_found:+$_found + }pi"
+    [ "$HAS_MUSE" = true ] && _found="${_found:+$_found + }Muse Code"
+    [ "$HAS_GROK" = true ] && _found="${_found:+$_found + }Grok Build"
     if [ "$LOCAL_MODE" = true ]; then
       echo "  $_found was all we found — local mode doesn't govern these yet; re-run without --local."
     else
@@ -291,7 +330,7 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
     exit 0
   fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Muse Code, Grok Build, Hermes Agent, DeepSeek Harness"
   echo "  Hermes Agent? It has a native pip plugin instead:"
   echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
