@@ -1,6 +1,6 @@
 1
 00:00:00,500 --> 00:00:04,000
-By the end: Claude Code runs your tests but can't touch a protected branch. One minute.
+By the end: your tests run, protected branches don't.
 
 2
 00:00:08,000 --> 00:00:13,000
@@ -15,15 +15,15 @@ What actually got installed: three files in ~/.acp.
 The policy is plain JSON — allow, ask, or deny, per tool. Most-specific key wins.
 
 5
-00:00:27,800 --> 00:00:30,600
-And in Claude Code's settings: a PreToolUse hook now runs every command through it.
+00:00:27,800 --> 00:00:31,400
+And in Claude Code's settings: a PreToolUse hook, on every command.
 
 6
-00:00:30,500 --> 00:00:36,000
+00:00:31,800 --> 00:00:37,000
 Start a session, ask for normal work: run the test suite.
 
 7
-00:00:36,500 --> 00:00:42,000
+00:00:37,400 --> 00:00:42,400
 It just runs. Allowed is the default — you're not approving every call.
 
 8
@@ -43,8 +43,8 @@ Blocked, before execution. The agent keeps its session; the push never happens.
 And the whole session is on file: ~/.acp/audit.jsonl.
 
 12
-00:01:08,900 --> 00:01:11,600
-One line per call: what ran, how it was classified, the decision, and the reason.
+00:01:08,900 --> 00:01:12,900
+One line per call: what ran, how it classified, the decision, the reason.
 
 13
 00:01:15,400 --> 00:01:21,500

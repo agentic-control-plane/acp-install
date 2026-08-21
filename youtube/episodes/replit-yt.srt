@@ -1,6 +1,6 @@
 1
 00:00:00,500 --> 00:00:04,000
-An agent is one command from deleting a production database. Watch what stops it.
+One command from deleting a production database.
 
 2
 00:00:08,000 --> 00:00:12,000
@@ -35,14 +35,14 @@ A rule that holds even when the story is good. No database was touched.
 Same session, normal work: the tests run, unprompted.
 
 10
-00:01:04,600 --> 00:01:07,600
+00:01:04,600 --> 00:01:08,300
 The receipt: the exact command, classified, denied — source: policy.
 
 11
-00:01:08,800 --> 00:01:13,500
-One honest caveat: this gates the action. Scope the credential provider-side too — you want both.
+00:01:10,400 --> 00:01:15,000
+One honest caveat: this gates the action. Scope the credential provider-side too.
 
 12
-00:01:14,000 --> 00:01:18,000
+00:01:15,400 --> 00:01:18,000
 Full write-up linked below. One command to try it.
 

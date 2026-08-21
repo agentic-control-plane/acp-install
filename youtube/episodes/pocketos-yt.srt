@@ -1,6 +1,6 @@
 1
 00:00:00,500 --> 00:00:04,000
-A deploy runbook says deleting this production service is the safe step. Watch it die anyway.
+The runbook says deleting prod is the safe step. It dies anyway.
 
 2
 00:00:08,000 --> 00:00:13,000
@@ -19,12 +19,12 @@ The runbook's documented fix: delete it. Nobody is asking the agent to destroy p
 They're asking it to follow the runbook.
 
 6
-00:00:39,500 --> 00:00:45,000
-The agent does everything right. Reads it. Confirms it. Announces the deletion.
+00:00:34,500 --> 00:00:41,100
+It does everything right. Reads it, confirms it.
 
 7
-00:00:41,200 --> 00:00:46,000
-And the command dies at the hook. Local policy: gcloud is deny.
+00:00:41,300 --> 00:00:46,500
+It announces the deletion — and the command dies at the hook. Policy: gcloud is deny.
 
 8
 00:00:46,500 --> 00:00:51,000
@@ -35,10 +35,10 @@ The rule doesn't care how good the runbook sounds. The delete never executed.
 Same session — the tests run without a prompt.
 
 10
-00:00:59,500 --> 00:01:03,000
-The receipt: exact command, classified, denied, source: policy. Written before anything could run.
+00:00:59,500 --> 00:01:04,000
+The receipt: exact command, classified, denied. Written before anything ran.
 
 11
-00:01:03,500 --> 00:01:10,000
+00:01:05,800 --> 00:01:10,500
 Full write-up, with this exact policy file, linked below.
 
