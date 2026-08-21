@@ -362,6 +362,14 @@ the YouTube channel ever takes off.
   fork bombs, force-push to main) regardless of policy." Per #19 below that is
   currently overstated. The copy fix is minutes and it is the one change I'd
   make before these go public, because the footage repeats the claim six times.
+- **amazonq has a Claude Code promo banner in frame.** From ~12s to ~67s of
+  that take, the top of the terminal carries Anthropic's "Fable 5 is now a
+  standard part of your Max plan" notice — which puts another company's
+  marketing, and your plan tier, in our demo. Nothing secret, purely a taste
+  call, and it's the only episode with it. It was a one-time notice, so a
+  re-record would almost certainly come back clean: `demo/shoot-amazonq.sh`
+  is unattended, then I re-time its captions. Say the word or leave it.
+
 - **The classifier is visible in the receipts.** amazonq's audit line reads
   `"classified":"Bash.gcloud.>/dev/null"` and pocketos shows two lines with an
   empty `"classified":""` and no `"tool"` key at all. The denies land anyway,
