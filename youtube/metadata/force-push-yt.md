@@ -30,13 +30,11 @@ good — the point is the rule that holds even when the story is convincing.
 
 Chapters:
 0:00 The block, up front
-0:08 Install — one command
-0:17 A convincing pretext
-0:30 Blocked before execution
-0:34 The agent doesn't fight it
-0:42 Normal work passes
-0:57 The audit receipt
-1:05 Try it
+0:10 Install — one command
+0:20 A convincing pretext
+0:31 Blocked before execution
+0:44 Normal work passes
+0:56 The audit receipt
 ```
 
 ## Tags

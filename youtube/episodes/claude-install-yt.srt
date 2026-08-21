@@ -7,15 +7,15 @@ By the end: Claude Code runs your tests but can't touch a protected branch. One 
 One command: curl agenticcontrolplane.com/install.sh, with --local. No account.
 
 3
-00:00:13,500 --> 00:00:18,000
+00:00:18,800 --> 00:00:22,200
 What actually got installed: three files in ~/.acp.
 
 4
-00:00:18,500 --> 00:00:24,000
+00:00:22,600 --> 00:00:27,400
 The policy is plain JSON — allow, ask, or deny, per tool. Most-specific key wins.
 
 5
-00:00:24,500 --> 00:00:30,000
+00:00:27,800 --> 00:00:30,600
 And in Claude Code's settings: a PreToolUse hook now runs every command through it.
 
 6
@@ -35,7 +35,7 @@ Now the unsafe one, dressed up the way it happens: "key's rotated, local main is
 A reasonable story for a force-push.
 
 10
-00:00:54,500 --> 00:00:59,000
+00:00:54,900 --> 00:00:59,200
 Blocked, before execution. The agent keeps its session; the push never happens.
 
 11
@@ -43,10 +43,10 @@ Blocked, before execution. The agent keeps its session; the push never happens.
 And the whole session is on file: ~/.acp/audit.jsonl.
 
 12
-00:01:06,500 --> 00:01:12,500
+00:01:08,900 --> 00:01:11,600
 One line per call: what ran, how it was classified, the decision, and the reason.
 
 13
-00:01:13,000 --> 00:01:19,000
+00:01:15,400 --> 00:01:21,500
 One command, one JSON file, every call logged. Guide linked below.
 

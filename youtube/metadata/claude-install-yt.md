@@ -30,13 +30,12 @@ this machine; scoping credentials at the provider stays worth doing too.
 
 Chapters:
 0:00 The result, up front
-0:08 Install — one command
-0:15 What got installed: policy.json + the PreToolUse hook
-0:23 Normal work is allowed
-0:37 An unsafe push, with a plausible excuse
-0:47 Blocked before execution
-1:00 The audit log
-1:12 Try it
+0:12 Install — one command
+0:22 What got installed: three files in ~/.acp
+0:33 A session starts; normal work runs
+0:43 An unsafe push, with a plausible excuse
+0:54 Blocked before execution
+1:08 The audit log
 ```
 
 ## Tags
