@@ -133,3 +133,122 @@ pipeline via `VIDEO=` instead of `CAST=`.
 The rig installs a MutationObserver that re-masks on every DOM mutation (a
 one-shot pass does not survive React re-renders) — confirm on a real frame,
 not on trust.
+
+---
+
+# WHAT I NEED FROM YOU — detailed
+
+Ordered by video-per-minute. Every command below is copy-pasteable. After
+each one I take over: recording, pacing, subtitles, thumbnail, Short,
+metadata pack.
+
+## A. Codex — 10 min → **2 videos** (best ratio on the board)
+
+Unblocks: "Govern Codex CLI in 60 seconds" + "Same policy, different agent"
+(the cross-vendor wedge — one policy, Claude Code *and* Codex).
+
+Why you: the rig never writes Codex's `trusted_hash`. Trusting a hook is
+Codex's security model, and a demo rig that forged it would be lying about
+the one step the video exists to show.
+
+```bash
+cd ~/dev/acp-install-yt
+demo/shoot-codex-install.sh
+```
+
+It prints a prereq check (tmux, asciinema, agg, ffmpeg, node, codex — all
+present as of today), preps a sandbox, then **pauses and prints ACTION
+NEEDED**. At that point, in a SECOND terminal:
+
+```bash
+tmux attach -t acpdemo
+```
+
+You will see Codex mid-startup. Three dialogs may appear — handle only what
+you see:
+1. `✨ Update available!` → choose **2 (Skip)**. The default is "Update now",
+   which npm-installs a new Codex mid-recording and ruins the take.
+2. `Do you trust the contents of this directory?` → **Yes**.
+3. `Hooks need review` → choose **1 (Review hooks)**, then trust the ACP hook.
+   The table showing `PreToolUse  Installed 1  Active 0` is the single
+   clearest statement of why this step matters — it gets its own beat.
+
+Then detach with **Ctrl-B, then D**. Do not Ctrl-C. The script finishes on
+its own and writes `demo/codex-install.cast`.
+
+Tell me when it's done and I package both videos.
+
+## B. SDK video — 2 min → **1 video** (highest search value of any remaining)
+
+Unblocks the Claude Agent SDK video. Our biggest AI-retrieval impression
+pool is machine queries like "anthropic agent sdk hooks governance" — this
+video's transcript targets it directly.
+
+Why you: the demo loads the REAL installed engine (I deleted the lookalike
+it shipped with), and provisioning an `.acp/` is a governance surface.
+
+You already have `~/.acp/decide.mjs`, so the short path works:
+
+```bash
+cd ~/dev/acp-sdk-demo && ./run-demo.sh
+```
+
+Expect ~18s: an agent runs `ls` (allow), writes a file (allow), tries to
+`rm` it (**deny**), then prints the audit rows. It prints the engine path it
+loaded — that path is the proof it is not grading its own homework.
+
+If you would rather not run it against your real `~/.acp` policy, use the
+sandbox option in `~/dev/acp-sdk-demo/SETUP.md` instead.
+
+Paste me the output and I turn it into the episode.
+
+## C. pi — 10 min → **1 video**
+
+Unblocks "The 80k-star harness with no permission system now has one" — pi
+ships zero permission model by design, which is the hook.
+
+Two blockers, both yours:
+1. **Node 22+ must be first on PATH before you start.** Current shell is
+   v20.20.0; pi fails cryptically on 20 (`markAsUncloneable`, deep in undici).
+   `fnm use 22` (or equivalent) first.
+2. **pi has no local mode** — `install.sh --local` explicitly skips it. So
+   the sandbox needs real cloud credentials, which means a browser device
+   sign-in inside the sandbox HOME. Exact command is in the header of
+   `demo/episodes/pi.sh`.
+
+Gotcha worth knowing before you spend the time: `record.sh prep` currently
+wipes `demo/.home/.acp/credentials` on every run, so the sign-in has to be
+redone per take. If we end up needing several takes, that gets annoying —
+say the word and I'll add credential preservation to the rig first.
+
+## D. opencode — blocked on a publish, not on you at a terminal
+
+The local-mode plugin is built and tested (49 + 31 green) but unpublished, so
+a video today would demo something users cannot install. Publishing
+`@agenticcontrolplane/opencode` unblocks it. Same shape as fx: built,
+verified, waiting on npm.
+
+npm publish needs a real terminal (Terminal.app / iTerm) for the security-key
+prompt — not this session.
+
+## E. Publishing the six that are done — needs nothing from me
+
+1. Create the channel (§1 above).
+2. Upload in the order in §2, pasting each `metadata/<ep>.md` verbatim and
+   **uploading `episodes/<ep>.srt` as the caption track** — these have no
+   audio, so that file is the only text YouTube and the answer engines get.
+3. Merge + deploy marketing **PR #76** (VideoObject schema) so the demos
+   already on the site become Google-video-indexable.
+4. Merge acp-install **PR #17** (this kit) whenever you like — nothing
+   depends on it being merged to publish.
+
+## F. Not blocking anything, but open
+
+- **acp-install #19 (p0)** — the safety floor is bypassed by `sudo -u`,
+  `timeout N`, `nice -n N`, `git -C … push --force`, `( … )`. The installer's
+  "regardless of policy" line is currently overstated. Copy fix is minutes;
+  engine fix is ~a day using the gateway's `segmentBinary` as the port source.
+- **acp-install #18** — policy denies bypassable by compound prefixing.
+- Local vs cloud floor divergence: local treats force-push-to-main as
+  hardline, the gateway does not (verified in `enforce` mode). Worth a ticket
+  so the two floors agree.
