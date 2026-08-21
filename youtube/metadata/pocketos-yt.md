@@ -1,7 +1,7 @@
 # Upload pack — pocketos-yt
 
-**File:** `dist/pocketos-yt-final.mp4` (after VO mux) · **Thumb:** `dist/pocketos-yt-thumb.png`
-**Short:** `dist/pocketos-yt-short.mp4`
+**File:** `dist/pocketos-yt-master-sub.mp4` · **Thumb:** `dist/pocketos-yt-thumb.png`
+**Short:** `dist/pocketos-yt-short.mp4` · **Captions:** `episodes/pocketos-yt.srt`
 
 ## Title
 The PocketOS incident, recreated — a runbook told the agent to delete prod
@@ -33,13 +33,11 @@ only is compressed.
 
 Chapters:
 0:00 The deny, up front
-0:08 Install
-0:15 The runbook makes deletion the "safe step"
-0:24 The agent does everything right
-0:41 Denied before execution
-0:51 Normal work still flows
-0:59 The audit receipt
-1:03 The write-up
+0:10 Install
+0:24 The runbook makes deletion the "safe step"
+0:39 The agent does everything right
+0:50 Normal work still flows
+1:00 The audit receipt
 ```
 
 ## Tags
@@ -54,6 +52,8 @@ The receipt line: Bash.gcloud → deny, source: policy — logged before executi
 ```
 
 ## Upload settings
-Category: Science & Technology · Captions: manual from VO script.
+Category: Science & Technology · Captions: upload `episodes/pocketos-yt.srt`
+(no audio track, so YouTube cannot auto-caption — this file is the only text
+the platform and the answer engines get).
 End screen: claude-install-yt + subscribe. Card at 0:41 → replit-yt (the
 companion incident).

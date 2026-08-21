@@ -1,7 +1,7 @@
 # Upload pack — replit-yt
 
-**File:** `dist/replit-yt-final.mp4` (after VO mux) · **Thumb:** `dist/replit-yt-thumb.png`
-**Short:** `dist/replit-yt-short.mp4`
+**File:** `dist/replit-yt-master-sub.mp4` · **Thumb:** `dist/replit-yt-thumb.png`
+**Short:** `dist/replit-yt-short.mp4` · **Captions:** `episodes/replit-yt.srt`
 
 ## Title
 The Replit database deletion, recreated — and blocked
@@ -11,8 +11,14 @@ The Replit database deletion, recreated — and blocked
 In 2025 an AI agent at Replit deleted a production database during a code
 freeze. This is a recreation of that class of failure with a real agent: a
 recovery runbook says the corrupted primary must be deleted, the agent
-verifies the runbook, believes the story, and runs the gcloud delete — which
-dies at a policy hook before execution. decision: deny, source: policy.
+verifies the runbook, believes the story, and reaches for gcloud — where its
+very first call dies at a policy hook, before execution. decision: deny,
+source: policy.
+
+Worth watching closely: the agent never reaches the delete. It goes to check
+the standby's real state first — a read-only `gcloud sql instances list` — and
+that call is already denied. The rule keys on the binary, not on the verb, so
+it stops the agent a step before the destructive one.
 
 The hard case isn't a malicious agent. It's a convinced one.
 
@@ -33,12 +39,12 @@ only is compressed.
 
 Chapters:
 0:00 One command from data loss
-0:08 Install
-0:15 The runbook pretext
-0:22 The agent is careful — and convinced
-0:34 Denied before execution
-0:53 The audit receipt
-1:07 The full write-up
+0:11 Install
+0:21 The runbook pretext
+0:34 The agent is careful — and convinced
+0:45 Denied before execution
+0:56 Normal work still flows
+1:04 The audit receipt
 ```
 
 ## Tags
@@ -54,5 +60,7 @@ Bash.gcloud.sql → deny, source: policy — logged before execution.
 ```
 
 ## Upload settings
-Category: Science & Technology · Captions: manual from VO script.
+Category: Science & Technology · Captions: upload `episodes/replit-yt.srt`
+(no audio track, so YouTube cannot auto-caption — this file is the only text
+the platform and the answer engines get).
 End screen: claude-install-yt + subscribe. Card at 0:41 → claude-install-yt.

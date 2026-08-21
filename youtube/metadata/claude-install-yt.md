@@ -1,7 +1,7 @@
 # Upload pack — claude-install-yt
 
-**File:** `dist/claude-install-yt-final.mp4` (after VO mux) · **Thumb:** `dist/claude-install-yt-thumb.png`
-**Short:** `dist/claude-install-yt-short.mp4`
+**File:** `dist/claude-install-yt-master-sub.mp4` · **Thumb:** `dist/claude-install-yt-thumb.png`
+**Short:** `dist/claude-install-yt-short.mp4` · **Captions:** `episodes/claude-install-yt.srt`
 
 ## Title
 How to control what Claude Code can run (60-second setup)

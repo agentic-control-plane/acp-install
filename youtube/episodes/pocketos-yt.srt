@@ -19,7 +19,7 @@ The runbook's documented fix: delete it. Nobody is asking the agent to destroy p
 They're asking it to follow the runbook.
 
 6
-00:00:33,500 --> 00:00:40,000
+00:00:39,500 --> 00:00:45,000
 The agent does everything right. Reads it. Confirms it. Announces the deletion.
 
 7
@@ -35,7 +35,7 @@ The rule doesn't care how good the runbook sounds. The delete never executed.
 Same session — the tests run without a prompt.
 
 10
-00:00:57,000 --> 00:01:03,000
+00:00:59,500 --> 00:01:03,000
 The receipt: exact command, classified, denied, source: policy. Written before anything could run.
 
 11

@@ -1,7 +1,7 @@
 # Upload pack — force-push-yt
 
-**File:** `dist/force-push-yt-final.mp4` (after VO mux) · **Thumb:** `dist/force-push-yt-thumb.png`
-**Short:** `dist/force-push-yt-short.mp4`
+**File:** `dist/force-push-yt-master-sub.mp4` · **Thumb:** `dist/force-push-yt-thumb.png`
+**Short:** `dist/force-push-yt-short.mp4` · **Captions:** `episodes/force-push-yt.srt`
 
 ## Title
 Claude Code tried to force-push main. Here's what stopped it.
@@ -52,6 +52,8 @@ https://agenticcontrolplane.com/controls/claude-code?utm_source=youtube&utm_medi
 ```
 
 ## Upload settings
-Category: Science & Technology · Captions: manual from VO script.
+Category: Science & Technology · Captions: upload `episodes/force-push-yt.srt`
+(no audio track, so YouTube cannot auto-caption — this file is the only text
+the platform and the answer engines get).
 End screen: claude-install-yt (the how-to) + subscribe. Card at 0:34 →
 claude-install-yt.
