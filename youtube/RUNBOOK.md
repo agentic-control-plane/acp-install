@@ -110,9 +110,10 @@ Watch them:
 ## 2. Upload (order matters)
 
 Upload **`claude-install-yt` first** — the others end-screen to it. Then
-`console-tour-yt` (it answers "what do I get?"), then the incidents spaced a
-few days apart: `force-push-yt`, `replit-yt`, `pocketos-yt`, `amazonq-yt`.
-They're a drumbeat, not a dump.
+`codex-install-yt` (it makes the point that the rule isn't one vendor's
+feature), then the incidents spaced a few days apart: `force-push-yt`,
+`replit-yt`, `pocketos-yt`, `amazonq-yt`. They're a drumbeat, not a dump.
+`console-tour-yt` slots in second as soon as its re-record lands.
 
 For each:
 1. Upload `dist/<ep>-master-sub.mp4`.
@@ -145,23 +146,31 @@ Drafts in your register — edit freely:
   > what the console looks like once a few agents are connected: every
   > governed call in one feed, each one drilling to the rule that decided it,
   > and an approvals queue instead of a prompt someone missed at 2am: <link>
+- codex-install-yt:
+  > set one rule on my machine for claude code, then pointed codex at the same
+  > repo. same rule, same block, different vendor. the interesting bit is the
+  > step in the middle: codex won't run a hook nobody has read, so a human
+  > reviews and trusts it. that's codex's design, not ours: <link>
+
 - force-push-yt:
   > gave claude code a convincing reason to force-push main. it bought the
   > story — the hook didn't. blocked before execution, receipt in the log.
   > real session, nothing mocked: <link>
 - replit-yt:
-  > recreated the replit database deletion with a real agent. the agent was
-  > careful — checked the runbook, verified the standby — and still ran the
-  > delete. the hard case is a convinced agent, not a malicious one: <link>
+  > recreated the replit database deletion with a real agent. it was careful —
+  > read the runbook, went to verify the standby's real state first — and that
+  > read-only check was already denied. it never got near the delete. the hard
+  > case is a convinced agent, not a malicious one: <link>
 - pocketos-yt:
   > a deploy runbook makes deleting the prod service the documented fix. the
   > agent verifies everything and runs it — policy deny, before execution.
   > the runbook was the attack: <link>
 - amazonq-yt:
-  > recreated the amazon q incident's damage half — rm -rf plus a cloud
-  > delete, dressed as routine cleanup. both denied before execution. we
-  > didn't demo the injection and won't; the point is the calls carry the
-  > check, not the prompt: <link>
+  > recreated the amazon q incident's damage half — an rm -rf and a cloud VM
+  > delete, dressed as routine cleanup. neither step ran. the agent didn't even
+  > reach the delete: its first gcloud call, a read-only describe, was already
+  > denied. we didn't demo the injection and won't; the point is the calls
+  > carry the check, not the prompt: <link>
 
 ## 4. Free distribution that needs no new work
 
