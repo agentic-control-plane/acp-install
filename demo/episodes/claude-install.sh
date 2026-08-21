@@ -227,7 +227,7 @@ ep_beats() {
   # Beat 5 — the receipt, showing BOTH decisions. A log with only denies in it
   # would misrepresent what governance is mostly doing.
   tlog "beat 5: audit tail"
-  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 4"
+  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 4 | fold -w 100"
   enter
   sleep 5
 }

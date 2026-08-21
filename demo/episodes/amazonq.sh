@@ -104,7 +104,7 @@ ep_beats() {
 
   # Beat 4 — the receipt: two denies + the allow.
   tlog "beat 4: audit tail"
-  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 5"
+  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 5 | fold -w 100"
   enter
   sleep 4
 }

@@ -88,6 +88,22 @@ master() {
     fc="$fc;[$prev][$i:v]overlay=x=(W-w)/2:y=H-120:enable='between(t,$a,$b)'[v$i]"
     prev="v$i"; i=$((i+1))
   done
+  # BODY_END: stop the body at N seconds on the footage clock. Timing only —
+  # it truncates, it never reorders or alters. Use it when the take ran past
+  # the point the episode is making, or when a tmux repaint corrupted a late
+  # frame (see codex-install: a repaint dropped 15 chars of the audit line at
+  # the 105-col wrap, so that frame is not shippable).
+  if [ -n "${BODY_END:-}" ]; then
+    fc="$fc;[$prev]trim=end=$BODY_END,setpts=PTS-STARTPTS[vcut]"; prev="vcut"
+  fi
+  # TAIL_PAD: hold the final frame for N more seconds. Needed because agg drops
+  # pace.mjs's TAIL_HOLD event (it carries no output, so no frame is emitted and
+  # the GIF ends at the last real frame). Use this when the payoff — an audit
+  # line, a receipt — lands at the very bottom of the terminal and needs to sit
+  # on screen after the subtitles clear. Timing only: it clones the last frame.
+  if [ -n "${TAIL_PAD:-}" ] && [ "${TAIL_PAD}" != "0" ]; then
+    fc="$fc;[$prev]tpad=stop_mode=clone:stop_duration=$TAIL_PAD[vpad]"; prev="vpad"
+  fi
   ffmpeg -y -loglevel error "${inputs[@]}" -filter_complex "$fc" -map "[$prev]" \
     -pix_fmt yuv420p -crf 18 "$body"
 

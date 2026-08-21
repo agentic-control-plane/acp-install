@@ -1,6 +1,6 @@
 # David's runbook — YouTube launch
 
-**Six videos are finished and publishable today.** They carry burned-in
+**Seven videos are finished and publishable today.** They carry burned-in
 subtitles, so they need no voiceover — your only inputs are creating the
 channel and uploading. Everything else (masters, thumbnails, Shorts, caption
 files, titles, descriptions, tags) is in this directory.
@@ -15,6 +15,7 @@ files, titles, descriptions, tags) is in this directory.
 | `pocketos-yt` | The PocketOS incident, recreated — a runbook told the agent to delete prod | 1:10 |
 | `amazonq-yt` | An agent ran rm -rf and a cloud delete. Both died at the hook. | 1:14 |
 | `console-tour-yt` | What you get after the install | 1:22 |
+| `codex-install-yt` | One policy, two agents: the rule that stops Claude Code stops Codex | 0:56 |
 
 Per episode in `dist/`: `<ep>-master-sub.mp4` (**the file to upload**),
 `<ep>-thumb.png`, `<ep>-short.mp4`. Caption file: `episodes/<ep>.srt`.
@@ -142,41 +143,63 @@ Ordered by video-per-minute. Every command below is copy-pasteable. After
 each one I take over: recording, pacing, subtitles, thumbnail, Short,
 metadata pack.
 
-## A. Codex — 10 min → **2 videos** (best ratio on the board)
+## A. Codex — DONE, and one optional 10-min upgrade
 
-Unblocks: "Govern Codex CLI in 60 seconds" + "Same policy, different agent"
-(the cross-vendor wedge — one policy, Claude Code *and* Codex).
+Your take on 21 Aug worked. `codex-install-yt` is built and in the table
+above. Two corrections to what I told you earlier:
 
-Why you: the rig never writes Codex's `trusted_hash`. Trusting a hook is
-Codex's security model, and a demo rig that forged it would be lying about
-the one step the video exists to show.
+**It's one video, not two.** I said this cast would yield a how-to *and* a
+cross-vendor cut. It doesn't. The two would share the same footage and the
+same payoff, and the second would be the first with a different title — which
+is exactly the kind of channel padding that trains people to skip us. The
+single cut carries both arguments in 56 seconds. If you want a second Codex
+video later it should be a different demo, not a re-edit.
+
+**This cut ends on the block, not on the audit tail.** The take recorded the
+receipt beat, but a tmux repaint dropped 15 characters of the JSON line right
+at the 105-column wrap, so the frame renders
+`"classified":"Bash.git.pusheny"` — a string that does not exist in the log.
+It's a rendering artifact, not a real decision. I cut the body before it
+(`BODY_END` in the env) rather than caption over it. The other five terminal
+casts were checked and are clean.
+
+Publish it as-is; it stands on its own.
+
+### The optional upgrade
+
+A re-record gets the receipt beat back — `"client":"codex"` in the audit line
+is the single strongest piece of evidence in the batch, because it's the log
+saying "a different vendor's agent hit your rule". The episode script now
+pipes the audit tail through `fold -w 100`, so the line can never reach the
+wrap column again.
+
+Same drill as last time, ~10 minutes:
 
 ```bash
 cd ~/dev/acp-install-yt
 demo/shoot-codex-install.sh
 ```
 
-It prints a prereq check (tmux, asciinema, agg, ffmpeg, node, codex — all
-present as of today), preps a sandbox, then **pauses and prints ACTION
-NEEDED**. At that point, in a SECOND terminal:
+It prints a prereq check, preps a sandbox, then **pauses and prints ACTION
+NEEDED**. Attach promptly — it aborts after 900s, which is what bit the first
+attempt. In a SECOND terminal:
 
 ```bash
 tmux attach -t acpdemo
 ```
 
-You will see Codex mid-startup. Three dialogs may appear — handle only what
-you see:
+Three dialogs may appear — handle only what you see:
 1. `✨ Update available!` → choose **2 (Skip)**. The default is "Update now",
    which npm-installs a new Codex mid-recording and ruins the take.
 2. `Do you trust the contents of this directory?` → **Yes**.
 3. `Hooks need review` → choose **1 (Review hooks)**, then trust the ACP hook.
-   The table showing `PreToolUse  Installed 1  Active 0` is the single
-   clearest statement of why this step matters — it gets its own beat.
 
-Then detach with **Ctrl-B, then D**. Do not Ctrl-C. The script finishes on
-its own and writes `demo/codex-install.cast`.
+Then detach with **Ctrl-B, then D**. Do not Ctrl-C. It writes
+`demo/codex-install.cast` (the current one is backed up as `.cast.bak`).
 
-Tell me when it's done and I package both videos.
+Tell me when it's done and I rebuild with the receipt beat restored. That
+would be a second, better upload — not a replacement, since YouTube won't let
+you swap a published file.
 
 ## B. SDK video — 2 min → **1 video** (highest search value of any remaining)
 

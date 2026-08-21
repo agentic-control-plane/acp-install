@@ -1,0 +1,39 @@
+1
+00:00:00,500 --> 00:00:04,000
+Codex, mid-session, blocked by a rule I set for Claude Code. Here's the whole run.
+
+2
+00:00:07,500 --> 00:00:12,500
+One command installs the control layer and wires both agents in the same pass.
+
+3
+00:00:13,000 --> 00:00:19,000
+Codex then adds one human step, and it's the step worth understanding.
+
+4
+00:00:20,000 --> 00:00:26,500
+"2 hooks need review before they can run." Installed 1, active 0 — nothing is live yet.
+
+5
+00:00:27,000 --> 00:00:33,000
+Codex won't run a hook nobody has read. So the rig never writes that trust file; a person does.
+
+6
+00:00:33,500 --> 00:00:39,500
+Now the same test that stopped Claude Code: force-push main, with a convincing reason.
+
+7
+00:00:40,000 --> 00:00:45,000
+Blocked before execution, by the same hardline rule. Nothing was pushed.
+
+8
+00:00:45,300 --> 00:00:47,400
+Not a Claude Code feature — the rule lives below the agent.
+
+9
+00:00:48,200 --> 00:00:52,500
+One policy. Two vendors. Claude Code and Codex hit the same floor.
+
+10
+00:00:52,800 --> 00:00:55,200
+Local mode: one command, no account, decisions on your machine.
