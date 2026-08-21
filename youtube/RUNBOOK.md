@@ -340,13 +340,34 @@ prompt — not this session.
 2. Upload in the order in §2, pasting each `metadata/<ep>.md` verbatim and
    **uploading `episodes/<ep>.srt` as the caption track** — these have no
    audio, so that file is the only text YouTube and the answer engines get.
-3. Merge + deploy marketing **PR #76** (VideoObject schema) so the demos
-   already on the site become Google-video-indexable.
+3. Merge + deploy marketing **PR #76** — this is now two things in one: the
+   VideoObject schema that makes the demos already on the site eligible for
+   Google video indexing, *and* the email-exposure fix at the top of this
+   file. Commands are up there.
 4. Merge acp-install **PR #17** (this kit) whenever you like — nothing
    depends on it being merged to publish.
 
+Still to do on the free-distribution side, and it needs nothing from you —
+say go and I'll do it: put these seven masters on their matching pages with
+the same include, passing `transcript=` from each SRT. I have the target page
+for every episode already (getting-started, the three incident posts, the
+git-history post, `integrations/codex.md`, and the console post). That makes
+each video a Google-indexable asset on our own domain independent of whether
+the YouTube channel ever takes off.
+
 ## F. Not blocking anything, but open
 
+- **The installer's own claim is on camera.** Every install video shows the
+  line "The safety floor always blocks the catastrophic (rm -rf /, mkfs, dd,
+  fork bombs, force-push to main) regardless of policy." Per #19 below that is
+  currently overstated. The copy fix is minutes and it is the one change I'd
+  make before these go public, because the footage repeats the claim six times.
+- **The classifier is visible in the receipts.** amazonq's audit line reads
+  `"classified":"Bash.gcloud.>/dev/null"` and pocketos shows two lines with an
+  empty `"classified":""` and no `"tool"` key at all. The denies land anyway,
+  and I've put a plain note in amazonq's pinned comment rather than hope nobody
+  reads it — but a viewer who looks will see the classifier splitting on the
+  wrong token, which is #18's root cause.
 - **acp-install #19 (p0)** — the safety floor is bypassed by `sudo -u`,
   `timeout N`, `nice -n N`, `git -C … push --force`, `( … )`. The installer's
   "regardless of policy" line is currently overstated. Copy fix is minutes;
