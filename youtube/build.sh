@@ -135,7 +135,7 @@ shorts() {
   local s1 s2 s3
   s1="$(png s1 caption "$TITLE1")"; s2="$(png s2 caption "$HOOK" --accent)"; s3="$(png s3 label 'full video on the channel')"
   ffmpeg -y -loglevel error -ss "${SHORT_START:?}" -to "${SHORT_END:?}" -i "$body" -i "$s1" -i "$s2" -i "$s3" \
-    -filter_complex "[0:v]crop=1280:1016:64:32,scale=1080:-2,pad=1080:1920:0:(oh-ih)/2:color=$BG[b];[b][1:v]overlay=x=(W-w)/2:y=200[c];[c][2:v]overlay=x=(W-w)/2:y=H-320[d];[d][3:v]overlay=x=(W-w)/2:y=H-220" \
+    -filter_complex "[0:v]crop=${SHORT_CROP:-1280:1016:64:32},scale=1080:-2,pad=1080:1920:0:(oh-ih)/2:color=$BG[b];[b][1:v]overlay=x=(W-w)/2:y=200[c];[c][2:v]overlay=x=(W-w)/2:y=H-320[d];[d][3:v]overlay=x=(W-w)/2:y=H-220" \
     -pix_fmt yuv420p -crf 18 "$DIST/$ep-short.mp4"
   echo "short → $DIST/$ep-short.mp4"
 }
