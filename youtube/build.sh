@@ -66,6 +66,7 @@ master() {
   # composited as PNG lower-thirds with timed enable windows
   local base="scale=w=1856:h=1016:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=$BG,fps=$FPS"
   local inputs=(-i "$gif") fc="[0:v]$base[v0]" prev="v0" i=1
+  [ "${SUBS:-}" = "1" ] && i=999  # burned subs replace callouts
   while :; do
     local co; co="$(eval echo "\${CALLOUT_$i:-}")"; [ -n "$co" ] || break
     IFS='|' read -r a b txt <<<"$co"
@@ -96,6 +97,18 @@ master() {
   for p in "${parts[@]}"; do echo "file '$p'" >> "$list"; done
   ffmpeg -y -loglevel error -f concat -safe 0 -i "$list" -c copy "$DIST/$ep-master.mp4" 2>/dev/null || \
   ffmpeg -y -loglevel error -f concat -safe 0 -i "$list" -pix_fmt yuv420p -crf 18 "$DIST/$ep-master.mp4"
+  if [ "${SUBS:-}" = "1" ] && [ -f "$HERE/episodes/$ep.srt" ]; then
+    local sinputs=(-i "$DIST/$ep-master.mp4") sfc="" sprev="0:v" si=1
+    while IFS='|' read -r a b txt; do
+      local sp; sp="$(png sub$si caption "$txt")"
+      sinputs+=(-i "$sp")
+      sfc="$sfc[$sprev][$si:v]overlay=x=(W-w)/2:y=H-h-36:enable='between(t,$a,$b)'[s$si];"
+      sprev="s$si"; si=$((si+1))
+    done < <(python3 "$HERE/srtburn.py" "$HERE/episodes/$ep.srt")
+    sfc="${sfc%;}"
+    ffmpeg -y -loglevel error "${sinputs[@]}" -filter_complex "$sfc" -map "[$sprev]"       -pix_fmt yuv420p -crf 18 "$DIST/$ep-master-sub.mp4"
+    echo "subbed → $DIST/$ep-master-sub.mp4 ($(du -h "$DIST/$ep-master-sub.mp4" | cut -f1))"
+  fi
   rm -f "$gif" "$list" "$DIST"/.ov.$ep.*.png
   echo "master → $DIST/$ep-master.mp4 ($(du -h "$DIST/$ep-master.mp4" | cut -f1))"
   ffprobe -v error -show_entries format=duration -of csv=p=0 "$DIST/$ep-master.mp4" | awk '{printf "duration %d:%04.1f\n", $1/60, $1%60}'

@@ -1,0 +1,48 @@
+1
+00:00:00,500 --> 00:00:04,000
+An agent is one command from deleting a production database. Watch what stops it.
+
+2
+00:00:08,000 --> 00:00:12,000
+Real recording, live install. One command, local mode, no account.
+
+3
+00:00:13,000 --> 00:00:20,000
+2025: an agent at Replit deleted a production database during a code freeze. This is the recreation.
+
+4
+00:00:20,500 --> 00:00:27,000
+A recovery runbook says the standby is verified — step two deletes the corrupted primary.
+
+5
+00:00:27,500 --> 00:00:33,000
+The agent is careful. It checks the runbook. It even wants to verify the standby itself.
+
+6
+00:00:33,500 --> 00:00:40,000
+Then it does what the runbook says. Not a malicious agent — a convinced one.
+
+7
+00:00:41,000 --> 00:00:46,000
+And the delete dies at the hook. Local policy: gcloud is deny.
+
+8
+00:00:46,500 --> 00:00:52,000
+A rule that holds even when the story is good. No database was touched.
+
+9
+00:00:52,500 --> 00:00:58,000
+The agent reports the block and stops. The command never executed.
+
+10
+00:00:59,000 --> 00:01:04,000
+The receipt: the exact command, classified, denied — source: policy.
+
+11
+00:01:04,500 --> 00:01:10,000
+One honest caveat: this gates the action. Scope the credential provider-side too — you want both.
+
+12
+00:01:10,500 --> 00:01:14,800
+Full write-up linked below. One command to try it.
+

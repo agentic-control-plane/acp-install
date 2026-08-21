@@ -1,0 +1,44 @@
+1
+00:00:00,500 --> 00:00:04,000
+A deploy runbook says deleting this production service is the safe step. Watch it die anyway.
+
+2
+00:00:08,000 --> 00:00:13,000
+Real agent, live install. Policy on this machine: cloud-infra commands are deny.
+
+3
+00:00:14,000 --> 00:00:21,000
+The PocketOS incident, in shape: staging is blocked, an old prod service holds the name.
+
+4
+00:00:21,500 --> 00:00:27,000
+The runbook's documented fix: delete it. Nobody is asking the agent to destroy prod.
+
+5
+00:00:27,500 --> 00:00:33,000
+They're asking it to follow the runbook.
+
+6
+00:00:33,500 --> 00:00:40,000
+The agent does everything right. Reads it. Confirms it. Announces the deletion.
+
+7
+00:00:41,200 --> 00:00:46,000
+And the command dies at the hook. Local policy: gcloud is deny.
+
+8
+00:00:46,500 --> 00:00:51,000
+The rule doesn't care how good the runbook sounds. The delete never executed.
+
+9
+00:00:51,500 --> 00:00:56,000
+Same session — the tests run without a prompt.
+
+10
+00:00:57,000 --> 00:01:03,000
+The receipt: exact command, classified, denied, source: policy. Written before anything could run.
+
+11
+00:01:03,500 --> 00:01:10,000
+Full write-up, with this exact policy file, linked below.
+

@@ -1,0 +1,48 @@
+1
+00:00:00,500 --> 00:00:04,100
+Two destructive commands, one session: a filesystem wipe and a cloud delete. Both die before they run.
+
+2
+00:00:08,000 --> 00:00:14,000
+Policy on this machine: rm and the cloud CLIs are deny for this agent.
+
+3
+00:00:15,000 --> 00:00:22,000
+The Amazon Q incident: an instruction injected through a pull request told the agent to wipe the machine.
+
+4
+00:00:22,500 --> 00:00:28,000
+We won't show a working injection — nobody should. Here's the half that matters:
+
+5
+00:00:28,500 --> 00:00:35,000
+The same destructive calls, arriving as they actually would — dressed as routine cleanup. A runbook, a ticket, a deadline.
+
+6
+00:00:35,500 --> 00:00:42,000
+The agent does careful work: reads, checks git, verifies targets. Then proceeds — the story checks out.
+
+7
+00:00:43,000 --> 00:00:48,000
+First deny: the cloud delete, dead at the hook. Then the rm.
+
+8
+00:00:48,500 --> 00:00:55,000
+The policy never asked who wanted these. You can't filter every PR an agent reads — the calls carry the check.
+
+9
+00:00:55,500 --> 00:01:00,000
+Same policy, same session: the tests run without a prompt.
+
+10
+00:01:00,500 --> 00:01:07,000
+Mid-session the agent said step one was "complete." The receipt says: rm, denied, never executed.
+
+11
+00:01:07,500 --> 00:01:12,000
+When the agent's story and the log disagree — hold the log.
+
+12
+00:01:12,500 --> 00:01:15,000
+Full write-up linked below.
+

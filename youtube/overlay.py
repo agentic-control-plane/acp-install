@@ -41,15 +41,25 @@ def card(out, l1, l2, l3):
         y += size + 52
     im.convert("RGB").save(out)
 
-def caption(out, text, accent=False):
+def caption(out, text, accent=False, size=34, maxw=1700):
+    # wrap into up to 2 lines at ~62 chars so long cues don't shrink illegibly
+    words, lines, cur = text.split(), [], ""
+    for w_ in words:
+        t = (cur + " " + w_).strip()
+        if len(t) > 62 and cur:
+            lines.append(cur); cur = w_
+        else:
+            cur = t
+    lines.append(cur)
     tmp = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    f = fit(tmp, text, 34, 1700, bold=False)
-    w = int(tmp.textlength(text, font=f))
-    pad_x, pad_y = 26, 16
-    im = Image.new("RGBA", (w + 2 * pad_x, f.size + 2 * pad_y + 8), (0, 0, 0, 0))
+    f = fit(tmp, max(lines, key=len), size, maxw, bold=False)
+    w = max(int(tmp.textlength(l, font=f)) for l in lines)
+    pad_x, pad_y, lh = 26, 16, int(f.size * 1.35)
+    im = Image.new("RGBA", (w + 2 * pad_x, lh * len(lines) + 2 * pad_y + 8), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     d.rounded_rectangle((0, 0, im.width - 1, im.height - 1), radius=10, fill=BOX)
-    d.text((pad_x, pad_y), text, font=f, fill=ACC if accent else FG)
+    for i, l in enumerate(lines):
+        d.text((pad_x, pad_y + i * lh), l, font=f, fill=ACC if accent else FG)
     im.save(out)
 
 def label(out, text):
