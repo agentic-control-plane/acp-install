@@ -35,7 +35,7 @@ Two things came out of the same thread:
   passed a "looks fine" review.
 
 
-**Six videos are finished and publishable today.** They carry burned-in
+**Seven videos are finished and publishable today.** They carry burned-in
 subtitles, so they need no voiceover — your only inputs are creating the
 channel and uploading. Everything else (masters, thumbnails, Shorts, caption
 files, titles, descriptions, tags) is in this directory.
@@ -50,8 +50,7 @@ files, titles, descriptions, tags) is in this directory.
 | `pocketos-yt` | The PocketOS incident, recreated — a runbook told the agent to delete prod | 1:13 |
 | `amazonq-yt` | An agent was told to wipe a directory and a cloud VM. Neither step ran. | 1:17 |
 | `codex-install-yt` | One policy, two agents: the rule that stops Claude Code stops Codex | 0:55 |
-
-`console-tour-yt` is **held back** — see "What changed after a QA pass" below.
+| `console-tour-yt` | What you actually get: every AI agent's calls in one console | 1:17 |
 
 ## What changed after a QA pass
 
@@ -71,7 +70,16 @@ attention because they are about honesty, not polish:
    `gcloud run services delete pocketos-prod`.)
 
 2. **The console tour would have published an `apikey:` UUID.** See the top of
-   this file. Re-recorded with the fixed mask.
+   this file. It took four takes to land: the mask fix, then a drill-in beat
+   whose captions described a screen the scene never recorded, then a Policies
+   beat I cut (that page opens on the rule-recommendation queue, and those
+   cards name you, name internal repos, and one describes a verified
+   policy-bypass path in our own product — not the rig's call to publish), then
+   a payoff that got 0.65 seconds because the capture rig only writes frames on
+   change, so a trailing dwell produced nothing. Verified clean on native-
+   resolution frames. What's still visible and is your call, not a defect:
+   internal repo and worktree names in the Runs table, `cwd: /Users/dev/dev`,
+   and integrations named in failure states on the Home band.
 
 3. **force-push is missing its third beat.** Beat 4 is meant to show an *ask*
    declined on camera — the only ask/decline moment in the whole batch. It

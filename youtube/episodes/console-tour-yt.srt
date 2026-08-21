@@ -1,39 +1,43 @@
 1
-00:00:03,500 --> 00:00:09,000
-The install videos end at one audit file on one machine. This is the other half.
+00:00:03,400 --> 00:00:07,900
+The install videos end at one audit file, on one machine. This is the other half.
 
 2
-00:00:09,500 --> 00:00:15,000
-Connect a workspace and the same decisions become a shared console.
+00:00:08,600 --> 00:00:14,000
+Connect a workspace and every governed call lands in one feed.
 
 3
-00:00:16,000 --> 00:00:23,000
-Activity is the live feed: one row per governed tool call, across every agent.
+00:00:14,400 --> 00:00:20,000
+One row per call: the tool, what it's allowed to do, the risk, and why.
 
 4
-00:00:23,500 --> 00:00:30,000
-Tool, decision, identity, latency — and for model calls, tokens and cost.
+00:00:20,400 --> 00:00:26,300
+Identity and latency on every row — and for model calls, the tokens and the cost.
 
 5
-00:00:31,000 --> 00:00:38,000
-Open a call and you get the reason: how it was classified, and which rule decided.
+00:00:27,400 --> 00:00:32,800
+Approvals is where a step-up policy sends blocked actions. Nothing here has executed.
 
 6
-00:00:39,000 --> 00:00:45,000
-Approvals is a queue a human works — not a prompt someone missed at 2am.
+00:00:33,200 --> 00:00:37,000
+Right now, nothing waiting. 31 approved, 1 rejected.
 
 7
-00:00:45,500 --> 00:00:52,000
-Nothing here has executed. High risk, irreversible, blast radius, stated up front.
+00:00:38,000 --> 00:00:42,800
+Back to the feed. This is every agent in the workspace, not one terminal.
 
 8
-00:00:53,000 --> 00:00:59,000
-Policies: allow, ask, or deny per tool — the same file, shared by the team.
+00:00:49,800 --> 00:00:55,500
+Runs is one row per execution. Sort by cost and the expensive ones surface.
 
 9
-00:01:00,000 --> 00:01:07,000
-And the money view: what each run cost, split by step, so you can see where it went.
+00:01:00,800 --> 00:01:04,400
+Open the top run and the money view breaks it apart.
 
 10
-00:01:07,500 --> 00:01:12,000
+00:01:04,900 --> 00:01:09,300
+The orchestration loop is 96% of the bill. Every Edit, Bash and Read call: free.
+
+11
+00:01:10,200 --> 00:01:15,600
 Real workspace, real traffic. Connect one and it starts filling in.
