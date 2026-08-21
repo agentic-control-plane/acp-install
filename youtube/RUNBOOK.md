@@ -1,6 +1,6 @@
 # David's runbook — YouTube launch batch
 
-Four videos are built and waiting on exactly two things from you: a channel
+Five videos are built and waiting on exactly two things from you: a channel
 and your voice. Everything else (masters, thumbnails, Shorts, captions,
 titles, descriptions, tags) is in this directory.
 
@@ -15,11 +15,11 @@ titles, descriptions, tags) is in this directory.
 3. Settings → Channel → Feature eligibility: enable intermediate features
    (needed for custom thumbnails; requires phone verify).
 
-## 2. Record the four voiceovers (~25 min total)
+## 2. Record the five voiceovers (~30 min total)
 
 Scripts: `scripts/force-push-yt-vo.md` · `scripts/replit-yt-vo.md` ·
-`scripts/claude-install-yt-vo.md` · `scripts/pocketos-yt-vo.md` — each is
-timecoded; total read ≈ 5 min.
+`scripts/claude-install-yt-vo.md` · `scripts/pocketos-yt-vo.md` ·
+`scripts/amazonq-yt-vo.md` — each is timecoded; total read ≈ 6.5 min.
 
 QuickTime Player → File → New Audio Recording → quality Maximum → built-in
 mic is fine in a quiet room, AirPods are not (compression artifacts). Play
@@ -28,7 +28,7 @@ the matching master in a muted window while reading so the blocks land:
     open youtube/dist/force-push-yt-master.mp4
 
 Save each as `youtube/vo/<episode>.m4a` (exact names: `force-push-yt.m4a`,
-`replit-yt.m4a`, `claude-install-yt.m4a`, `pocketos-yt.m4a`).
+`replit-yt.m4a`, `claude-install-yt.m4a`, `pocketos-yt.m4a`, `amazonq-yt.m4a`).
 
 Flub a line → pause 2s → re-read the block; tell me and I'll cut it.
 
@@ -38,14 +38,15 @@ Flub a line → pause 2s → re-read the block; tell me and I'll cut it.
     youtube/build.sh vo replit-yt
     youtube/build.sh vo claude-install-yt
     youtube/build.sh vo pocketos-yt
+    youtube/build.sh vo amazonq-yt
 
 Output: `dist/<episode>-final.mp4`. Watch each once before upload.
 
 ## 4. Upload (order matters)
 
 Upload `claude-install-yt` FIRST (the how-to the others end-screen to), then
-`force-push-yt`, then `replit-yt`, then `pocketos-yt` (spacing the two
-incident videos a few days apart is fine). For each, everything you need is in
+`force-push-yt`, then `replit-yt`, then `pocketos-yt`, then `amazonq-yt`
+(space the incident videos days apart — they're the drumbeat, not a dump). For each, everything you need is in
 `metadata/<episode>.md`: title, description (paste verbatim — the UTM links
 are the lead measurement), tags, pinned comment, thumbnail file, end-screen
 and card settings, and manual captions from the VO script.
@@ -75,6 +76,11 @@ Drafts in your register — edit freely:
   > second incident recreation: a deploy runbook makes deleting the prod
   > service the documented fix. the agent verifies everything and runs it —
   > policy deny, before execution. the runbook was the attack: <link>
+- amazonq-yt:
+  > recreated the amazon q incident's damage half — rm -rf plus a cloud
+  > delete, dressed as routine cleanup. both denied before execution. we
+  > didn't demo the injection and won't; the point is the calls carry the
+  > check, not the prompt: <link>
 
 ## 6. Codex episode (first follow-up, ~10 min, needs you)
 
