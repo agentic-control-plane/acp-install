@@ -1,62 +1,67 @@
-# David's runbook — YouTube launch batch
+# David's runbook — YouTube launch
 
-Five videos are built and waiting on exactly two things from you: a channel
-and your voice. Everything else (masters, thumbnails, Shorts, captions,
-titles, descriptions, tags) is in this directory.
+**Six videos are finished and publishable today.** They carry burned-in
+subtitles, so they need no voiceover — your only inputs are creating the
+channel and uploading. Everything else (masters, thumbnails, Shorts, caption
+files, titles, descriptions, tags) is in this directory.
+
+## What's ready
+
+| Episode | Title | Length |
+|---|---|---|
+| `claude-install-yt` | How to control what Claude Code can run (60-second setup) | 1:19 |
+| `force-push-yt` | Claude Code tried to force-push main. Here's what stopped it. | 1:13 |
+| `replit-yt` | The Replit database deletion, recreated — and blocked | 1:15 |
+| `pocketos-yt` | The PocketOS incident, recreated — a runbook told the agent to delete prod | 1:10 |
+| `amazonq-yt` | An agent ran rm -rf and a cloud delete. Both died at the hook. | 1:14 |
+| `console-tour-yt` | What you get after the install | 1:22 |
+
+Per episode in `dist/`: `<ep>-master-sub.mp4` (**the file to upload**),
+`<ep>-thumb.png`, `<ep>-short.mp4`. Caption file: `episodes/<ep>.srt`.
+Upload pack (title, description, tags, chapters, pinned comment):
+`metadata/<ep>.md`.
+
+Watch them:
+
+    open ~/dev/acp-install-yt/youtube/dist
 
 ## 1. Create the channel (~5 min, one-time)
 
 1. youtube.com → profile avatar → **Create a channel** → **Use a Brand
-   Account** (not your personal identity — transferable, and others can be
-   added as managers later). Suggested name: `Agentic Control Plane`,
-   handle `@agenticcontrolplane`.
+   Account** (transferable; managers can be added later). Suggested name
+   `Agentic Control Plane`, handle `@agenticcontrolplane`.
 2. Channel art: skip for launch or reuse the site OG image. Description:
-   first two lines of any video description + site link.
-3. Settings → Channel → Feature eligibility: enable intermediate features
-   (needed for custom thumbnails; requires phone verify).
+   first two lines of any video description + the site link.
+3. Settings → Channel → Feature eligibility → enable intermediate features
+   (needed for custom thumbnails; requires phone verification).
 
-## 2. Record the five voiceovers (~30 min total)
+## 2. Upload (order matters)
 
-Scripts: `scripts/force-push-yt-vo.md` · `scripts/replit-yt-vo.md` ·
-`scripts/claude-install-yt-vo.md` · `scripts/pocketos-yt-vo.md` ·
-`scripts/amazonq-yt-vo.md` — each is timecoded; total read ≈ 6.5 min.
+Upload **`claude-install-yt` first** — the others end-screen to it. Then
+`console-tour-yt` (it answers "what do I get?"), then the incidents spaced a
+few days apart: `force-push-yt`, `replit-yt`, `pocketos-yt`, `amazonq-yt`.
+They're a drumbeat, not a dump.
 
-QuickTime Player → File → New Audio Recording → quality Maximum → built-in
-mic is fine in a quiet room, AirPods are not (compression artifacts). Play
-the matching master in a muted window while reading so the blocks land:
+For each:
+1. Upload `dist/<ep>-master-sub.mp4`.
+2. Paste title + description verbatim from `metadata/<ep>.md`. **The UTM
+   links in the description are the lead measurement — don't strip them.**
+3. Set thumbnail `dist/<ep>-thumb.png`, add the tags, pin the comment.
+4. **Upload `episodes/<ep>.srt` as the caption track.** These videos have no
+   audio, so YouTube cannot auto-generate captions — this file is the only
+   text the platform gets, and that transcript is what search and AI
+   assistants read. Do not skip it.
+5. Visibility **Public**, not "made for kids", comments on.
 
-    open youtube/dist/force-push-yt-master.mp4
+Shorts (`dist/<ep>-short.mp4`) go up after the main videos are live: title =
+main title, first description line = "Full video: <URL of the main video>".
 
-Save each as `youtube/vo/<episode>.m4a` (exact names: `force-push-yt.m4a`,
-`replit-yt.m4a`, `claude-install-yt.m4a`, `pocketos-yt.m4a`, `amazonq-yt.m4a`).
+**One-way door:** YouTube does not let you replace a video file after
+publishing. If you ever want a voiceover version of one of these, it's a new
+upload at a new URL. The silent masters (`<ep>-master.mp4`) stay VO-ready and
+`build.sh vo <ep>` still works — but treat the subtitled cut as final.
 
-Flub a line → pause 2s → re-read the block; tell me and I'll cut it.
-
-## 3. Mux + verify (mine or yours, one command each)
-
-    youtube/build.sh vo force-push-yt
-    youtube/build.sh vo replit-yt
-    youtube/build.sh vo claude-install-yt
-    youtube/build.sh vo pocketos-yt
-    youtube/build.sh vo amazonq-yt
-
-Output: `dist/<episode>-final.mp4`. Watch each once before upload.
-
-## 4. Upload (order matters)
-
-Upload `claude-install-yt` FIRST (the how-to the others end-screen to), then
-`force-push-yt`, then `replit-yt`, then `pocketos-yt`, then `amazonq-yt`
-(space the incident videos days apart — they're the drumbeat, not a dump). For each, everything you need is in
-`metadata/<episode>.md`: title, description (paste verbatim — the UTM links
-are the lead measurement), tags, pinned comment, thumbnail file, end-screen
-and card settings, and manual captions from the VO script.
-
-Visibility: **Public**. Not "made for kids". Comments on.
-
-Shorts (`dist/<episode>-short.mp4`): upload after the main three are live,
-title = main title, first description line = "Full video: <main video URL>".
-
-## 5. The X drumbeat (one post per video, spread over ~a week)
+## 3. The X drumbeat (one post per video)
 
 Drafts in your register — edit freely:
 
@@ -64,6 +69,10 @@ Drafts in your register — edit freely:
   > set up an allow/ask/deny policy for claude code in about a minute and
   > recorded it. the interesting part is the audit file — one line per tool
   > call with the decision and the reason. video: <link>
+- console-tour-yt:
+  > what the console looks like once a few agents are connected: every
+  > governed call in one feed, each one drilling to the rule that decided it,
+  > and an approvals queue instead of a prompt someone missed at 2am: <link>
 - force-push-yt:
   > gave claude code a convincing reason to force-push main. it bought the
   > story — the hook didn't. blocked before execution, receipt in the log.
@@ -73,34 +82,54 @@ Drafts in your register — edit freely:
   > careful — checked the runbook, verified the standby — and still ran the
   > delete. the hard case is a convinced agent, not a malicious one: <link>
 - pocketos-yt:
-  > second incident recreation: a deploy runbook makes deleting the prod
-  > service the documented fix. the agent verifies everything and runs it —
-  > policy deny, before execution. the runbook was the attack: <link>
+  > a deploy runbook makes deleting the prod service the documented fix. the
+  > agent verifies everything and runs it — policy deny, before execution.
+  > the runbook was the attack: <link>
 - amazonq-yt:
   > recreated the amazon q incident's damage half — rm -rf plus a cloud
   > delete, dressed as routine cleanup. both denied before execution. we
   > didn't demo the injection and won't; the point is the calls carry the
   > check, not the prompt: <link>
 
-## 6. Codex episode (first follow-up, ~10 min, needs you)
+## 4. Free distribution that needs no new work
 
-`demo/codex-install.cast` is an incomplete take (ends at the Codex banner —
-no deny, no receipt), so the Codex video isn't in this batch. The rig is
-ready; the hook-trust step must be a human (by design — the rig never
-writes trusted_hash):
+- **Marketing PR #76** (davidcrowe/agenticcontrolplane.com) adds VideoObject
+  schema to the site's video include, so the demos we already embed become
+  eligible for Google video indexing. Merge + deploy.
+- After that: attach these masters to their matching `/controls` pages and
+  incident posts with the same include, passing `transcript=` from the SRT so
+  the narration text is indexable too.
 
+## 5. Still needs you (10 min, unblocks two more videos)
+
+Codex — the hook-trust step is human by design (the rig never writes
+`trusted_hash`):
+
+    cd ~/dev/acp-install-yt
     demo/shoot-codex-install.sh
-    # when it prints ACTION NEEDED, from a second terminal:
-    tmux attach -t acpdemo   # → trust the hooks → Ctrl-B D
+    # when it prints ACTION NEEDED, from a SECOND terminal:
+    tmux attach -t acpdemo    # → trust the hooks → Ctrl-B D
 
-Then I take it from the fresh cast: `youtube/build.sh master codex-install-yt`
-(manifest + script + metadata to follow the same pattern).
+Codex auth is already restored in the sandbox. From the fresh cast I package
+both Codex videos (how-to + cross-vendor "same policy, different agent").
 
 ## What happens after launch
 
-- Measurement is already wired: descriptions carry per-video UTM links →
-  Plausible; signups stamp referer/UTM on the tenant doc; first governed
-  call = the qualification bar. I'll build the per-video attribution view.
-- Proof gate: review at 4–6 weeks on (a) search-driven watch time in YT
-  Studio, (b) YouTube-attributed signups. Tier 2 (one video per /controls
-  harness) only if it pulls.
+- Measurement is wired: per-video UTM → Plausible; signups stamp
+  referer/UTM on the tenant doc; **first governed call is the qualification
+  bar** (the install→first-call gap has historically been ~54%). Rank videos
+  by signups, not views.
+- Proof gate at 4–6 weeks on (a) search-driven watch time in YT Studio,
+  (b) YouTube-attributed signups — before committing to a weekly cadence.
+
+## Recording more (for whoever picks this up)
+
+`youtube/README.md` has the pipeline. Episodes are `demo/episodes/<slug>.sh`
+(the take) + `youtube/episodes/<slug>-yt.env` (the video). Console
+screencasts come from `~/dev/console-shot-rig` (`scenes/*.mjs`) and enter the
+pipeline via `VIDEO=` instead of `CAST=`.
+
+**Before publishing any console video, verify the operator email is masked.**
+The rig installs a MutationObserver that re-masks on every DOM mutation (a
+one-shot pass does not survive React re-renders) — confirm on a real frame,
+not on trust.
