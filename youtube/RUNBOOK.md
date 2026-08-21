@@ -1,5 +1,40 @@
 # David's runbook — YouTube launch
 
+## Do this first — a live page is showing your email
+
+`agenticcontrolplane.com/for-coding-agents` embeds `acp-cost-xray.mp4`, and
+that recording renders the session header as
+`claude-cli · <your personal gmail address> · 6563 events`. It has been live
+since the page shipped. The video predates the masking fix in the capture rig
+(a one-shot text sweep that React undid on the next re-render), so nothing
+caught it.
+
+It is fixed on the `video-seo` branch — re-recorded with the current rig, header
+now reads `d***********com`, and the alt text and caption rewritten to the
+figures in the new recording. The fix is not live until you deploy:
+
+```bash
+cd ~/dev/acp-mkt-video
+gh pr merge 76 --squash
+git checkout main && git pull
+export PATH="/opt/homebrew/opt/ruby/bin:/opt/homebrew/lib/ruby/gems/4.0.0/bin:$PATH"
+JEKYLL_ENV=production bundle exec jekyll build
+firebase deploy --only hosting
+```
+
+I ran that production build here and it is clean, so this should be one pass.
+
+Two things came out of the same thread:
+
+- The rig now also masks credential identifiers, not just emails. The Approvals
+  card renders the requesting identity as `apikey:<uuid>` **in full**, and a
+  console tour built from that frame was already sitting in the publish-ready
+  pile. Caught before upload, not after.
+- **Before publishing any console recording, check a real frame for an email,
+  an `apikey:`, or a bare UUID.** Both leaks were in footage that had already
+  passed a "looks fine" review.
+
+
 **Seven videos are finished and publishable today.** They carry burned-in
 subtitles, so they need no voiceover — your only inputs are creating the
 channel and uploading. Everything else (masters, thumbnails, Shorts, caption
