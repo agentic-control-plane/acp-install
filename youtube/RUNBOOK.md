@@ -392,3 +392,88 @@ the YouTube channel ever takes off.
 - Local vs cloud floor divergence: local treats force-push-to-main as
   hardline, the gateway does not (verified in `enforce` mode). Worth a ticket
   so the two floors agree.
+
+---
+
+# The slate — what to record next, and what each one costs
+
+Audited all 11 harness pages and 26 integration pages. One structural fact
+sets the whole shape:
+
+**`install.sh --local` wires Claude Code, Cursor and Codex. Nothing else.**
+Every other harness prints "needs a workspace" and is skipped, so it requires a
+`gsk_` key from a browser device flow. "Record it unattended" therefore means
+"Claude Code" and nothing else, today.
+
+## Tier 1 — one command from you, then unattended
+
+| Episode | What you do | Notes |
+|---|---|---|
+| **Claude Agent SDK** | one sandbox provisioning command (below) | I fixed two bugs here: it crashed on a bare `readFileSync` of `policy.json`, and the README described the engine files I deleted. |
+| **More Claude Code incidents** | nothing | The one harness that records with no human and no credential. The blog catalogs several incidents we haven't filmed. |
+| **Codex, 2nd episode** | ~30s per take at the keyboard | Worth fixing first: `prep()` preserves `.codex/auth.json` but wipes `config.toml`, so `trusted_hash` is lost and you re-trust on *every* take. Preserve it and it becomes once, not every time. |
+
+The SDK command — provisioning an `.acp/` is a governance surface, so it's
+yours, not mine:
+
+```bash
+SB=~/dev/acp-sdk-demo/.sandbox
+mkdir -p "$SB/.acp"
+cp ~/dev/acp-install/decide.mjs "$SB/.acp/decide.mjs"
+printf '{"default":"allow","rules":{"Bash.rm":"deny"}}\n' > "$SB/.acp/policy.json"
+cd ~/dev/acp-sdk-demo && ACP_HOME="$SB" ./run-demo.sh
+```
+
+## Tier 2 — blocked on a publish, which needs your terminal
+
+- **opencode** — the binary is already on this box and local mode is written
+  (commit `8f5ac1a`), but npm still has the cloud-only 0.2.1. Publish
+  `@agenticcontrolplane/opencode` ≥0.2.2, then delete the `--local` skip at
+  `install.sh:1427`. Highest ceiling of anything blocked.
+- **fx** — further from ready than I said earlier. `@agenticcontrolplane/fx`
+  is a **404 on npm**, there is **no `integrations/fx.md`**, and `install.sh`
+  mentions fx **zero times**. Only `controls/fx.md` exists. There is nothing to
+  install on camera yet, so this is not a video, it's a build.
+
+## Tier 3 — batch these into one credential session
+
+Grok Build, pi, dsh, Hermes, Muse Code, OpenClaw. Each needs exactly two
+credentials minted once into the sandbox: a model key and an ACP workspace key.
+Six episodes for one sitting. (pi's Node 22 requirement is **not** a blocker
+any more — `fnm` has v22.23.2.)
+
+One thing that might drop several of these blockers at once, and I can't check
+it because it's a governance surface:
+
+```bash
+ls -l ~/dev/acp-install-yt/demo/.home/.acp/credentials
+```
+
+If the sandbox already holds a workspace key, every "needs an ACP key" row gets
+cheaper.
+
+## Tier 4 — not filmable by a terminal rig at all
+
+Cursor, Zed, Claude Desktop and Cline are GUI apps; AWS Bedrock, Microsoft
+Foundry and Vertex are cloud consoles; the Okta page has no Okta-specific
+config on it to demo. These need screen capture, which is a different medium
+and a separate decision. Don't queue them against this rig.
+
+## The single biggest lever: give the Python SDK a local engine
+
+Nine framework integrations — langgraph, crewai, openai-agents-sdk,
+vercel-ai-sdk, mastra, pydantic-ai, autogen, anthropic-agent-sdk,
+google-agents-cli — are all blocked the same way, and it isn't model keys.
+Every one of them wraps a plain callable, so a demo can exercise the governed
+tool directly and never call a model at all.
+
+What blocks them is that `acp-governance` has **no local decision path**. With
+no token it POSTs nothing and returns allow. So a keyless demo records a screen
+where every call passes and nothing is logged — because that is genuinely what
+happens. Filed as **acp-governance-sdks#6**, and it is a correctness bug before
+it is a video problem: a user who pip-installs, decorates their tools and
+misconfigures the token gets no governance, no audit and no warning, and
+believes they are governed.
+
+Give the SDK the same local engine the harnesses already ship and all nine
+become zero-credential and fully unattended.
