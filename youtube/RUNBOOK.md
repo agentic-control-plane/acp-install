@@ -35,7 +35,7 @@ Two things came out of the same thread:
   passed a "looks fine" review.
 
 
-**Seven videos are finished and publishable today.** They carry burned-in
+**Six videos are finished and publishable today.** They carry burned-in
 subtitles, so they need no voiceover — your only inputs are creating the
 channel and uploading. Everything else (masters, thumbnails, Shorts, caption
 files, titles, descriptions, tags) is in this directory.
@@ -44,13 +44,49 @@ files, titles, descriptions, tags) is in this directory.
 
 | Episode | Title | Length |
 |---|---|---|
-| `claude-install-yt` | How to control what Claude Code can run (60-second setup) | 1:19 |
-| `force-push-yt` | Claude Code tried to force-push main. Here's what stopped it. | 1:13 |
-| `replit-yt` | The Replit database deletion, recreated — and blocked | 1:15 |
-| `pocketos-yt` | The PocketOS incident, recreated — a runbook told the agent to delete prod | 1:10 |
-| `amazonq-yt` | An agent ran rm -rf and a cloud delete. Both died at the hook. | 1:14 |
-| `console-tour-yt` | What you get after the install | 1:22 |
-| `codex-install-yt` | One policy, two agents: the rule that stops Claude Code stops Codex | 0:56 |
+| `claude-install-yt` | How to control what Claude Code can run (60-second setup) | 1:22 |
+| `force-push-yt` | Claude Code tried to force-push main. Here's what stopped it. | 1:16 |
+| `replit-yt` | The Replit database deletion, recreated — and blocked | 1:18 |
+| `pocketos-yt` | The PocketOS incident, recreated — a runbook told the agent to delete prod | 1:13 |
+| `amazonq-yt` | An agent was told to wipe a directory and a cloud VM. Neither step ran. | 1:17 |
+| `codex-install-yt` | One policy, two agents: the rule that stops Claude Code stops Codex | 0:55 |
+
+`console-tour-yt` is **held back** — see "What changed after a QA pass" below.
+
+## What changed after a QA pass
+
+I checked every caption against the frame it plays over, rather than trusting
+the SRTs I wrote. That found real defects in all seven, so the six above are
+rebuilt and the seventh is being re-recorded. Three findings are worth your
+attention because they are about honesty, not polish:
+
+1. **Two videos claimed more than the terminal showed.** replit and amazonq
+   both captioned the deny as *the destructive command* dying at the hook. It
+   isn't. In both takes the agent is stopped on its **first gcloud call** — a
+   read-only `sql instances list`, a `config list` / `instances describe` —
+   and never reaches the delete. The rule keys on the binary, not the verb.
+   Anyone reading the screen would have caught it. Both now say what actually
+   happened, which is the better fact: the agent was stopped a step *before*
+   the destructive one. (pocketos is clean here — that deny really is
+   `gcloud run services delete pocketos-prod`.)
+
+2. **The console tour would have published an `apikey:` UUID.** See the top of
+   this file. Re-recorded with the fixed mask.
+
+3. **force-push is missing its third beat.** Beat 4 is meant to show an *ask*
+   declined on camera — the only ask/decline moment in the whole batch. It
+   didn't resolve in that take, so ~8s of the video is an aborted prompt with
+   no outcome. The caption that used to sit over it read as "and this one was
+   allowed", which never happened; it's now moved onto the tests beat and that
+   stretch plays uncaptioned. Honest, but a gap. A re-record is unattended —
+   say the word and I'll run it.
+
+Also fixed everywhere: captions that ran ahead of the action by 2–6s, captions
+spilling onto the outro card, and the audit output being on screen for ~3s
+while carrying ~8s of narration with the caption box covering the JSON. Every
+episode now holds its last frame so the receipt is readable once the caption
+clears — that payoff line is the whole proof, and it was obscured in all of
+them.
 
 Per episode in `dist/`: `<ep>-master-sub.mp4` (**the file to upload**),
 `<ep>-thumb.png`, `<ep>-short.mp4`. Caption file: `episodes/<ep>.srt`.
