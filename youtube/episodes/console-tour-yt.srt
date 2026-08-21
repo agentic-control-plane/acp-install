@@ -1,0 +1,39 @@
+1
+00:00:03,500 --> 00:00:09,000
+The install videos end at one audit file on one machine. This is the other half.
+
+2
+00:00:09,500 --> 00:00:15,000
+Connect a workspace and the same decisions become a shared console.
+
+3
+00:00:16,000 --> 00:00:23,000
+Activity is the live feed: one row per governed tool call, across every agent.
+
+4
+00:00:23,500 --> 00:00:30,000
+Tool, decision, identity, latency — and for model calls, tokens and cost.
+
+5
+00:00:31,000 --> 00:00:38,000
+Open a call and you get the reason: how it was classified, and which rule decided.
+
+6
+00:00:39,000 --> 00:00:45,000
+Approvals is a queue a human works — not a prompt someone missed at 2am.
+
+7
+00:00:45,500 --> 00:00:52,000
+Nothing here has executed. High risk, irreversible, blast radius, stated up front.
+
+8
+00:00:53,000 --> 00:00:59,000
+Policies: allow, ask, or deny per tool — the same file, shared by the team.
+
+9
+00:01:00,000 --> 00:01:07,000
+And the money view: what each run cost, split by step, so you can see where it went.
+
+10
+00:01:07,500 --> 00:01:12,000
+Real workspace, real traffic. Connect one and it starts filling in.

@@ -36,8 +36,15 @@ ENVF="$HERE/episodes/$ep.env"
 [ -f "$ENVF" ] || { echo "no episode $ENVF"; exit 1; }
 # shellcheck disable=SC1090
 source "$ENVF"
-CASTF="$DEMO/$CAST"
-[ -f "$CASTF" ] || { echo "missing cast $CASTF"; exit 1; }
+# Episodes source either a terminal .cast (rendered via agg) or, for console
+# screencasts, a pre-recorded .mp4 (VIDEO=) produced by console-shot-rig.
+if [ -n "${VIDEO:-}" ]; then
+  SRCV="$VIDEO"; case "$SRCV" in /*) ;; *) SRCV="$DIST/$VIDEO";; esac
+  [ -f "$SRCV" ] || { echo "missing video $SRCV"; exit 1; }
+else
+  CASTF="$DEMO/$CAST"
+  [ -f "$CASTF" ] || { echo "missing cast $CASTF"; exit 1; }
+fi
 
 # ── pacing: trim dead tail, cap idles, per-window speed ────────────────
 # All pacing happens HERE (agg then runs at speed 1 / no idle cap), so the
@@ -60,12 +67,18 @@ card() { # card <out.mp4> <seconds> <line1> <line2> <line3>
 
 master() {
   local rc="$DIST/$ep.paced.cast" gif="$DIST/$ep.raw.gif" body="$DIST/$ep.body.mp4"
-  paced "$rc"
-  agg --font-size 24 --theme dracula "$rc" "$gif" 2>/dev/null
+  local srcarg
+  if [ -n "${VIDEO:-}" ]; then
+    srcarg="$SRCV"                       # console screencast: already a video
+  else
+    paced "$rc"
+    agg --font-size 24 --theme dracula "$rc" "$gif" 2>/dev/null
+    srcarg="$gif"
+  fi
   # raster → 1080p canvas, terminal centered on dracula ground; callouts
   # composited as PNG lower-thirds with timed enable windows
-  local base="scale=w=1856:h=1016:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=$BG,fps=$FPS"
-  local inputs=(-i "$gif") fc="[0:v]$base[v0]" prev="v0" i=1
+  local base="scale=w=${FITW:-1856}:h=${FITH:-1016}:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=$BG,fps=$FPS"
+  local inputs=(-i "$srcarg") fc="[0:v]$base[v0]" prev="v0" i=1
   [ "${SUBS:-}" = "1" ] && i=999  # burned subs replace callouts
   while :; do
     local co; co="$(eval echo "\${CALLOUT_$i:-}")"; [ -n "$co" ] || break
