@@ -224,6 +224,45 @@ if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# Prime Agent (Prime Intellect) — a pi-mono hard fork that kept pi's extension
+# API; governed via the same kind of native TypeScript extension on its
+# tool_call / tool_result events (prime-agent-acp-plugin adds an argv-based
+# headless fix for prime's hasUI print-mode bug). Same one-front-door rule.
+# Extensions under ~/.prime/agent/extensions/ load without a project-trust
+# prompt. Fail-open: a fetch failure prints the manual path.
+HAS_PRIME=false
+PRIME_EXT_DIR="$HOME/.prime/agent/extensions"
+# The ~/.prime/agent dir is the reliable signal; `command -v prime-agent`
+# alone could match an unrelated binary, so require the dir on PATH fallback.
+if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent &> /dev/null && [ -d "$HOME/.prime" ]; }; then
+  HAS_PRIME=true
+fi
+# Cloud-only like pi: the extension reads ~/.acp/credentials; local decisions
+# aren't wired there yet.
+if [ "$HAS_PRIME" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Prime Agent detected — skipped in --local mode (its ACP extension needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_PRIME" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Prime Agent — installing the ACP extension…"
+  PRIME_EXT_OK=false
+  if mkdir -p "$PRIME_EXT_DIR" 2>/dev/null && curl -sf \
+    https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts \
+    -o "$PRIME_EXT_DIR/acp.ts" 2>/dev/null && [ -s "$PRIME_EXT_DIR/acp.ts" ]; then
+    PRIME_EXT_OK=true
+  fi
+  if [ "$PRIME_EXT_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Prime Agent governed${C_RESET} — extension written to ~/.prime/agent/extensions/acp.ts; active from the next session or /reload (needs Node 22.8+)."
+  else
+    # Network refused or the extensions dir isn't writable — print the manual
+    # path rather than guessing.
+    echo "  Couldn't fetch automatically. Install it by hand:"
+    echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts -o ~/.prime/agent/extensions/acp.ts"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/prime-agent"
+  fi
+  echo ""
+fi
+
 # Muse Code (Meta) — governed via its native plugin system (behind the
 # MUSE_EXPERIMENTAL_PLUGINS flag in the 0.2.1 beta; the flag gates only the
 # management CLI, approved hooks fire without it). Our npm package IS the
@@ -330,7 +369,7 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
     exit 0
   fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Muse Code, Grok Build, Hermes Agent, DeepSeek Harness"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Prime Agent, Muse Code, Grok Build, Hermes Agent, DeepSeek Harness"
   echo "  Hermes Agent? It has a native pip plugin instead:"
   echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
@@ -340,6 +379,9 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
   echo "  pi (earendil-works)? A native extension file:"
   echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
   echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
+  echo "  Prime Agent? Same idea, a native extension file:"
+  echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts -o ~/.prime/agent/extensions/acp.ts"
+  echo "  Guide: https://agenticcontrolplane.com/integrations/prime-agent"
   echo ""
   echo "  Install one first, then re-run this script."
   exit 1
