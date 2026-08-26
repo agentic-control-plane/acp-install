@@ -1,9 +1,11 @@
 // Fixture tests for the LOCAL decision engine (decide.mjs).
 //
 // The safety floor is the single most-trusted promise the installer makes
-// ("nothing can cross it"). These fixtures pin the floor's coverage on the
-// common phrasings of each catastrophe — including the flag orderings and
-// spellings an agent actually emits — so a well-meaning refactor can't quietly
+// ("nothing can cross it") — a promise that was broken once by ordinary
+// command shapes (sudo -u, timeout N, nice -n, git -C, subshells — #19).
+// These fixtures pin the floor's coverage on the common phrasings of each
+// catastrophe — including the flag orderings, spellings, and wrapper/grouping
+// launders an agent actually emits — so a well-meaning refactor can't quietly
 // reopen a hole. They also pin that every key the default policy ships is
 // reachable by the classifier (a rule that never fires is worse than no rule).
 
@@ -52,6 +54,17 @@ const FLOOR_DENY = [
   // $HOME spellings
   [RM, "-rf", "$HOME"].join(" "),
   [RM, "-rf", "${HOME}"].join(" "),
+  // wrapper operands, option-arguments, and grouping (#19)
+  ["sudo", "-u", "root", RM, "-rf", "/"].join(" "),   // sudo's -u USER operand
+  ["timeout", "5", RM, "-rf", "~"].join(" "),         // timeout's DURATION operand
+  ["nice", "-n", "10", RM, "-rf", "/"].join(" "),     // nice's -n N operand
+  ["nohup", "timeout", "2", RM, "-rf", "/"].join(" "),// stacked wrappers
+  "git -C . push --force origin main",                // option-argument before subcommand
+  ["(", RM, "-rf", "/", ")"].join(" "),               // subshell
+  ["{", RM, "-rf", "/;", "}"].join(" "),              // brace group
+  ["fish -c '", RM, "-rf /'"].join(" "),              // fish joins SHELL_BINS
+  ["echo ok $(", RM, "-rf ~ )"].join(" "),            // command substitution
+  [RM, "-rf", "/."].join(" "),                        // /. spelling of root
 ];
 
 for (const cmd of FLOOR_DENY) {
@@ -73,6 +86,11 @@ const FLOOR_ALLOW = [
   "bash -c 'echo hi'",                    // -c with a benign command
   "bash ./scripts/build.sh",              // running a script is not -c
   "git commit -m 'eval cleanup'",         // interpreter words inside a message
+  "timeout 30 npm test",                  // wrapped, but benign
+  "sudo -u postgres psql -c 'select 1'",  // -u operand consumed, psql is fine
+  "nice -n 10 make build",
+  "git -C /repo status",
+  "npm run lint && npm test",             // compound, but benign
 ];
 
 for (const cmd of FLOOR_ALLOW) {
@@ -93,6 +111,28 @@ test("classifyTool: curl carries host, plain bins stay bare", () => {
   assert.equal(classifyTool(...bash("rm -rf foo")), "Bash.rm");
   assert.equal(classifyTool("Write", { file_path: "a.ts" }), "Write");
   assert.equal(classifyTool("WebFetch", { url: "https://www.example.com/p" }), "WebFetch.example.com");
+});
+
+test("classifyTool unwraps wrapper operands and option-arguments (#19)", () => {
+  assert.equal(classifyTool(...bash("sudo -u root chmod 777 f")), "Bash.chmod");
+  assert.equal(classifyTool(...bash("timeout 5 npm test")), "Bash.npm.test");
+  assert.equal(classifyTool(...bash("nice -n 10 git push origin dev")), "Bash.git.push");
+  assert.equal(classifyTool(...bash("git -C /repo push origin dev")), "Bash.git.push"); // was the malformed "Bash.git.."
+});
+
+test("compound commands classify by most-privileged segment; every segment is policy-checked (#18)", () => {
+  assert.equal(classifyTool(...bash("which gcloud && gcloud sql instances delete x --quiet")), "Bash.gcloud.sql");
+  assert.equal(classifyTool(...bash("true && chmod 777 /tmp/demo")), "Bash.chmod");
+  const policy = { default: "allow", rules: { "Bash.gcloud": "deny", ["Bash." + RM]: "deny", "Bash.curl": "ask" } };
+  assert.equal(decide(...bash("which gcloud && gcloud sql instances delete x --quiet"), policy).decision, "deny");
+  assert.equal(decide(...bash(["true &&", RM, "-rf", "/tmp/demo"].join(" ")), policy).decision, "deny");
+  assert.equal(decide(...bash("echo hi && curl https://x.com"), policy).decision, "ask"); // strictest matched rule wins
+  assert.equal(decide(...bash("npm run lint && npm test"), policy).decision, "allow");    // benign compound stays allow
+});
+
+test("unparseable non-empty commands are Bash.unknown, never a wrong-segment key", () => {
+  assert.equal(classifyTool(...bash(") ) )")), "Bash.unknown"); // still governable; falls back to Bash in the walk
+  assert.equal(classifyTool(...bash("")), "Bash");
 });
 
 // ── Every default-policy key must be reachable by the classifier. ───────────

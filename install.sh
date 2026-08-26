@@ -759,11 +759,33 @@ function shellTokens(cmd) {
   return out;
 }
 
-const WRAPPERS = new Set(["sudo", "env", "nice", "nohup", "stdbuf", "timeout", "time", "xargs", "command", "doas"]);
+// Wrappers that prefix another command. `valueFlags` are the flags whose value
+// is a SEPARATE token (`sudo -u root`, `nice -n 10`); `operands` is how many
+// positional operands the wrapper itself consumes before the real command
+// (`timeout [flags] DURATION cmd…`). Skipping flags but not these operands is
+// exactly the hole of #19: `timeout 5 rm -rf ~` classified as Bash.5.
+const WRAPPERS = new Map([
+  ["sudo", { valueFlags: new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"]), operands: 0 }],
+  ["doas", { valueFlags: new Set(["-u", "-C"]), operands: 0 }],
+  ["env", { valueFlags: new Set(["-u", "-C", "-P", "-S"]), operands: 0 }],
+  ["nice", { valueFlags: new Set(["-n", "--adjustment"]), operands: 0 }],
+  ["nohup", { valueFlags: new Set(), operands: 0 }],
+  ["setsid", { valueFlags: new Set(), operands: 0 }],
+  ["stdbuf", { valueFlags: new Set(["-i", "-o", "-e"]), operands: 0 }],
+  ["timeout", { valueFlags: new Set(["-s", "--signal", "-k", "--kill-after"]), operands: 1 }],
+  ["time", { valueFlags: new Set(), operands: 0 }],
+  ["xargs", { valueFlags: new Set(["-I", "-n", "-P", "-L", "-d", "-a", "-E", "-s"]), operands: 0 }],
+  ["command", { valueFlags: new Set(), operands: 0 }],
+  ["builtin", { valueFlags: new Set(), operands: 0 }],
+]);
 
-/** Split a command line into its piped/chained segments (on unquoted | & ; and
- *  newlines), so the floor inspects every command in a compound line, not just
- *  the first (e.g. `echo hi && rm -rf ~`). */
+// Shell keywords are never the governed binary: `if rm -rf /; then …` and
+// `{ rm -rf /; }` must classify as rm, not stall on the keyword.
+const SHELL_KEYWORDS = new Set(["if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "{", "}", "(", ")", "!"]);
+
+/** Split a command line into its piped/chained segments (on unquoted | & ; ( )
+ *  and newlines), so every command in a compound line is inspected, not just
+ *  the first (e.g. `echo hi && rm -rf ~`, `( rm -rf ~ )`, `$(rm -rf ~)`). */
 function splitSegments(cmd) {
   const segs = [];
   let buf = "";
@@ -771,22 +793,36 @@ function splitSegments(cmd) {
   for (const ch of String(cmd)) {
     if (quote) { buf += ch; if (ch === quote) quote = null; continue; }
     if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
-    if (ch === "|" || ch === "&" || ch === ";" || ch === "\n") { if (buf.trim()) segs.push(buf.trim()); buf = ""; continue; }
+    if (ch === "|" || ch === "&" || ch === ";" || ch === "\n" || ch === "(" || ch === ")") { if (buf.trim()) segs.push(buf.trim()); buf = ""; continue; }
     buf += ch;
   }
   if (buf.trim()) segs.push(buf.trim());
   return segs;
 }
 
-/** Strip leading env-assignments and benign wrappers; return { bin, args } where
- *  bin is the canonical binary (basename, no path) and args are its arguments. */
+/** Strip leading env-assignments, shell keywords, and benign wrappers —
+ *  including each wrapper's own option-arguments and positional operands
+ *  (`sudo -u root …`, `timeout 5 …`, `nice -n 10 …`) — and return
+ *  { bin, args } where bin is the canonical binary (basename, no path). */
 function parseCommand(cmd) {
   const toks = shellTokens(cmd);
   let i = 0;
-  while (i < toks.length) {
+  let hops = 0;
+  while (i < toks.length && hops++ < 32) {
     const t = toks[i];
     if (t.includes("=") && !t.startsWith("-")) { i++; continue; }        // FOO=bar
-    if (WRAPPERS.has(t)) { i++; while (i < toks.length && toks[i].startsWith("-")) i++; continue; }
+    if (SHELL_KEYWORDS.has(t)) { i++; continue; }                        // if / { / do …
+    const w = WRAPPERS.get(t);
+    if (w) {
+      i++;
+      while (i < toks.length && toks[i].startsWith("-")) {
+        const flag = toks[i];
+        i++;
+        if (w.valueFlags.has(flag)) i++;                                 // sudo -u USER
+      }
+      for (let n = 0; n < w.operands && i < toks.length; n++) i++;       // timeout DURATION
+      continue;
+    }
     return { bin: t.split("/").pop(), args: toks.slice(i + 1) };
   }
   return { bin: "", args: [] };
@@ -810,33 +846,119 @@ function safeParse(s) { try { return JSON.parse(s); } catch { return {}; } }
 // without also governing `git status`. Keep this small and obvious.
 const SUBCOMMAND_BINS = new Set(["git", "gh", "docker", "kubectl", "npm", "pnpm", "yarn", "pip", "pip3", "gcloud", "aws", "systemctl"]);
 
-/** First non-flag argument (the subcommand), lowercased, or undefined. */
+// Global flags whose VALUE is a separate token, so the value is never
+// mistaken for the subcommand: `git -C /repo push` is a push (was the
+// malformed key "Bash.git.." — #19), `kubectl -n prod delete` is a delete.
+const FLAGS_WITH_VALUE = new Set(["-C", "-c", "-H", "-n", "-R", "--git-dir", "--work-tree", "--namespace", "--context", "--cluster", "--kubeconfig", "--prefix", "--profile", "--project", "--config", "--repo"]);
+
+/** First non-flag argument (the subcommand), lowercased, or undefined —
+ *  skipping over flags AND their separate-token values. */
 function firstSubcommand(args) {
-  for (const a of args) { if (!a.startsWith("-")) return a.toLowerCase(); }
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("-")) {
+      if (FLAGS_WITH_VALUE.has(a)) i++;                                  // git -C /repo
+      continue;
+    }
+    return a.toLowerCase();
+  }
   return undefined;
+}
+
+// ── Compound-command classification ───────────────────────────────────
+// A compound command classifies by its MOST PRIVILEGED segment, and decide()
+// policy-checks EVERY segment (strictest verdict wins) — classifying by the
+// first segment let `true && gcloud …` run under Bash.true (#18). Rank
+// mirrors the gateway's fix for this class (gsc#516 / gsc#750): benign
+// navigational bins lose to unknown bins, which lose to privileged bins.
+
+/** Benign / navigational binaries — never the interesting part of a
+ *  compound command. */
+const BENIGN_BINS = new Set([
+  "cd", "echo", "printf", "true", "false", "pwd", "ls", "cat", "head", "tail",
+  "less", "more", "grep", "rg", "wc", "sort", "uniq", "cut", "tr", "date",
+  "sleep", "which", "type", "test", "[", "[[", "dirname", "basename",
+  "readlink", "ps", "diff", "jq", "yq", "tee", "read", "exit", "return",
+  "wait", "export", "set", "unset", "shift", "local", "declare",
+]);
+
+/** Binary classes that outrank an unknown binary when picking a compound
+ *  command's classification: deploy/infra, source control, deletion, network
+ *  egress, db clients, interpreters. */
+const PRIVILEGED_BINS = new Set([
+  "gcloud", "aws", "azure", "firebase", "terraform", "docker", "kubectl",
+  "git", "gh", "npm", "pnpm", "yarn", "pip", "pip3", "rm", "mv", "chmod",
+  "chown", "curl", "wget", "ssh", "scp", "rsync", "kill", "sed", "find",
+  "psql", "mysql", "mariadb", "sqlite3", "systemctl", "launchctl",
+  "powershell", "pwsh", "python", "python3", "node", "ruby", "perl", "cargo",
+  "go", "make", "stripe", "vercel", "flyctl", "fly", "heroku", "tar", "open",
+  "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "eval",
+]);
+
+/** Privilege rank for most-privileged-segment selection: benign 0,
+ *  unknown 1, privileged 2. Ties resolve to the EARLIEST unit. */
+function privilegeRank(bin) {
+  if (BENIGN_BINS.has(bin)) return 0;
+  if (PRIVILEGED_BINS.has(bin)) return 2;
+  return 1;
+}
+
+/** Every governed unit of a Bash command: one per segment, plus the payload
+ *  of any `bash -c "…"` / `eval …` hand-off (recursed, capped), so neither a
+ *  benign prefix nor an interpreter hop hides a unit from policy. */
+function commandUnits(cmd, depth = 0) {
+  const units = [];
+  if (depth > 3) return units;
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    if (!bin) continue;
+    units.push({ bin, args, seg });
+    const inner = innerShellCommand(bin, args);
+    if (inner) units.push(...commandUnits(inner, depth + 1));
+  }
+  return units;
+}
+
+/** Dotted policy key for one command unit. */
+function unitKey(u) {
+  if (u.bin === "curl" || u.bin === "wget") {
+    const host = firstHost(u.seg);
+    return host ? `Bash.curl.${host}` : "Bash.curl";
+  }
+  if (SUBCOMMAND_BINS.has(u.bin)) {
+    const sub = firstSubcommand(u.args);
+    return sub ? `Bash.${u.bin}.${sub}` : `Bash.${u.bin}`;
+  }
+  return `Bash.${u.bin}`;
+}
+
+/** The units of a Bash-shaped tool call, or null for other tools. */
+function bashUnits(toolName, toolInput) {
+  const name = String(toolName || "");
+  if (name !== "Bash" && name !== "run_terminal_cmd" && name !== "shell") return null;
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+  return commandUnits(String(input.command || input.cmd || ""));
 }
 
 /**
  * Classify a tool call into a dotted policy key, e.g. "Bash.rm",
  * "Bash.git.push", "Bash.curl.api.github.com", "Write", "WebFetch.example.com".
+ * A non-empty command with no classifiable unit is the explicit
+ * "Bash.unknown" (never a malformed or wrong-segment key): still governable
+ * by a Bash.unknown rule, still falls back to "Bash" in the policy walk, and
+ * honestly labeled as unparsed in the audit line rather than silently benign.
  */
 export function classifyTool(toolName, toolInput) {
   const name = String(toolName || "");
   const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
 
   if (name === "Bash" || name === "run_terminal_cmd" || name === "shell") {
-    const cmd = input.command || input.cmd || "";
-    const { bin, args } = parseCommand(cmd);
-    if (!bin) return "Bash";
-    if (bin === "curl" || bin === "wget") {
-      const host = firstHost(cmd);
-      return host ? `Bash.curl.${host}` : "Bash.curl";
-    }
-    if (SUBCOMMAND_BINS.has(bin)) {
-      const sub = firstSubcommand(args);
-      return sub ? `Bash.${bin}.${sub}` : `Bash.${bin}`;
-    }
-    return `Bash.${bin}`;
+    const cmd = String(input.command || input.cmd || "");
+    const units = commandUnits(cmd);
+    if (!units.length) return cmd.trim() ? "Bash.unknown" : "Bash";
+    let best = units[0];
+    for (const u of units) if (privilegeRank(u.bin) > privilegeRank(best.bin)) best = u;
+    return unitKey(best);
   }
   if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "create_file" || name === "edit_file") {
     return "Write";
@@ -867,7 +989,7 @@ function hasShortOrLongFlag(args, letter, longName) {
   return false;
 }
 
-const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", "${HOME}", ".", "./", "*", "/*", "./*", "~/*"]);
+const RM_DANGER_TARGETS = new Set(["/", "/.", "~", "~/", "$HOME", "$HOME/", "${HOME}", ".", "./", "*", "/*", "./*", "~/*"]);
 
 /** rm with BOTH recursive and force, aimed at a root/home/cwd/glob target. */
 function rmForceFloor(bin, args) {
@@ -900,7 +1022,7 @@ function gitForcePushFloor(bin, args) {
 
 // Shells whose `-c <string>` argument is itself a command line: recurse the
 // floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
-const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"]);
 
 /** If this command hands a string to another interpreter (`bash -c '…'`,
  *  `eval …`), return that inner command line; else undefined. */
@@ -972,6 +1094,7 @@ export function candidates(key) {
 }
 
 const VALID = new Set(["allow", "ask", "deny"]);
+const SEVERITY = { allow: 0, ask: 1, deny: 2 };
 
 /**
  * Decide a tool call locally.
@@ -984,12 +1107,24 @@ export function decide(toolName, toolInput, policy) {
 
   const key = classifyTool(toolName, toolInput);
   const rules = (policy && policy.rules) || {};
-  for (const cand of candidates(key)) {
-    const r = rules[cand];
-    if (VALID.has(r)) {
-      return { decision: r, reason: `local policy: ${cand} → ${r}`, source: "policy", classified: key };
+
+  // EVERY unit of a compound command is policy-checked, and the strictest
+  // matched rule wins (deny > ask > allow) — so `true && gcloud …` cannot
+  // slip a gcloud rule behind a benign first segment (#18).
+  const units = bashUnits(toolName, toolInput);
+  const keys = units && units.length ? [...new Set(units.map(unitKey))] : [key];
+  let hit = null;
+  for (const k of keys) {
+    for (const cand of candidates(k)) {
+      const r = rules[cand];
+      if (VALID.has(r)) {
+        if (!hit || SEVERITY[r] > SEVERITY[hit.r]) hit = { r, cand };
+        break;
+      }
     }
   }
+  if (hit) return { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key };
+
   const def = VALID.has(policy && policy.default) ? policy.default : "allow";
   return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key };
 }
