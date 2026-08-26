@@ -346,6 +346,42 @@ if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# Google Antigravity (agy) — CLI, IDE, and app read ONE shared registration at
+# ~/.gemini/config/hooks.json. We MERGE under our own "acp" key via node (the
+# hook needs node anyway) — never overwrite: the file may hold user hooks.
+HAS_AGY=false
+if command -v agy &> /dev/null || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+  HAS_AGY=true
+fi
+if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Antigravity detected — skipped in --local mode (its ACP hook needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Google Antigravity — installing the ACP hook…"
+  AGY_HOOK_OK=false
+  _agy_raw="https://raw.githubusercontent.com/agentic-control-plane/antigravity-acp-plugin/main"
+  if command -v node &> /dev/null \
+    && mkdir -p "$HOME/.acp/hooks/antigravity" "$HOME/.gemini/config" 2>/dev/null \
+    && curl -fsSL "$_agy_raw/hook.mjs" -o "$HOME/.acp/hooks/antigravity/hook.mjs" 2>/dev/null \
+    && curl -fsSL "$_agy_raw/hooks/acp.json" -o "$HOME/.acp/hooks/antigravity/acp.json" 2>/dev/null \
+    && node -e 'const fs=require("fs");const p=process.env.HOME+"/.gemini/config/hooks.json";let cur={};try{cur=JSON.parse(fs.readFileSync(p,"utf8"))}catch(e){};const add=JSON.parse(fs.readFileSync(process.env.HOME+"/.acp/hooks/antigravity/acp.json","utf8"));fs.writeFileSync(p,JSON.stringify(Object.assign(cur,add),null,2))' 2>/dev/null; then
+    AGY_HOOK_OK=true
+  fi
+  if [ "$AGY_HOOK_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Antigravity governed${C_RESET} — registration merged into the shared hooks.json (CLI, IDE, and app); ACP asks render as native force_ask prompt cards; active from the next session."
+    INSTALLED="${INSTALLED:+$INSTALLED, }Antigravity"
+  else
+    echo "  Couldn't finish automatically (node/curl refused or a directory wasn't writable). Run:"
+    echo "    mkdir -p ~/.acp/hooks/antigravity ~/.gemini/config"
+    echo "    curl -fsSL $_agy_raw/hook.mjs -o ~/.acp/hooks/antigravity/hook.mjs"
+    echo "    curl -fsSL $_agy_raw/hooks/acp.json -o ~/.acp/hooks/antigravity/acp.json"
+    echo "    node -e 'see https://agenticcontrolplane.com/integrations/antigravity#manual-install'"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/antigravity"
+  fi
+  echo ""
+fi
+
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
 if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
   HAS_OPENCODE=true
