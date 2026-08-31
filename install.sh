@@ -438,6 +438,21 @@ if [ "$HAS_OPENCODE" = true ]; then
   if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + opencode"; else TARGETS="opencode"; fi
 fi
 
+# Machine-readable form of the same detection, sent with the device-code
+# request so the minted key records WHICH harness it was wired for. The
+# gateway defaults this to "unknown" when absent, which is what every key
+# minted through device flow has been labelled until now — and device flow
+# is the best-converting install path we have, so it was also the only one
+# we could not attribute. Gateway clips to 64 chars.
+CLIENT_SLUG=""
+_add_slug() { if [ -n "$CLIENT_SLUG" ]; then CLIENT_SLUG="$CLIENT_SLUG+$1"; else CLIENT_SLUG="$1"; fi; }
+[ "$HAS_CLAUDE" = true ] && _add_slug "claude-code"
+[ "$HAS_CURSOR" = true ] && _add_slug "cursor"
+[ "$HAS_CODEX" = true ] && _add_slug "codex"
+[ "$HAS_OPENCLAW" = true ] && _add_slug "openclaw"
+[ "$HAS_OPENCODE" = true ] && _add_slug "opencode"
+[ -n "$CLIENT_SLUG" ] || CLIENT_SLUG="cli"
+
 echo ""
 echo "  Agentic Control Plane"
 echo "  Identity & governance for $TARGETS"
@@ -1773,7 +1788,7 @@ DEVICE_INFO="$(node -e '
       const r = await fetch(API + "/device/code", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ client: process.argv[2] || "cli" }),
       });
       if (!r.ok) process.exit(1);
       const d = await r.json();
@@ -1786,7 +1801,7 @@ DEVICE_INFO="$(node -e '
       ].join("\t"));
     } catch { process.exit(1); }
   })();
-' "$API_BASE" 2>/dev/null || true)"
+' "$API_BASE" "$CLIENT_SLUG" 2>/dev/null || true)"
 
 USER_CODE="$(printf "%s" "$DEVICE_INFO" | cut -f1)"
 VERIFY_URL="$(printf "%s" "$DEVICE_INFO" | cut -f2)"
