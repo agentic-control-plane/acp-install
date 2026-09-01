@@ -1733,6 +1733,8 @@ POLICY
   echo "  Want team control, cost X-ray, and a shared console across everyone's agents?"
   echo "  Re-run without ${C_DIM}--local${C_RESET} to connect a workspace."
   echo ""
+  echo "  If ACP is useful, a star helps others find it: https://github.com/agentic-control-plane/claude-code-acp-plugin"
+  echo ""
   exit 0
 fi
 
@@ -1971,6 +1973,10 @@ if [ "$HAS_OPENCLAW" = true ]; then
   echo "  Then restart OpenClaw to activate the plugin"
 fi
 echo ""
+if [ "${ACP_UNGOVERNED:-false}" != true ]; then
+  echo "  If ACP is useful, a star helps others find it: https://github.com/agentic-control-plane/claude-code-acp-plugin"
+  echo ""
+fi
 
 # Exit non-zero when the install finished without a usable key, so the state
 # is detectable by a wrapper, a CI check, or the user's shell — not only by
