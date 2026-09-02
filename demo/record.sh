@@ -37,9 +37,22 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SBHOME="$HERE/.home"                 # sandbox HOME (gitignored)
-CAST="$HERE/demo.cast"
-GIF="$HERE/acp-local-demo.gif"
-MP4="$HERE/acp-local-demo.mp4"
+
+# Episode selection: `record.sh <cmd> [episode]` (default: force-push, the
+# shipped hero). Each episode lives in episodes/<slug>.sh and defines the
+# fixture, policy, confirm-gate pattern, and beats. Sourced here so its EP_*
+# vars are available; its functions only call the helpers below at run time.
+EPISODE="${ACP_EPISODE:-${2:-force-push}}"
+EP_FILE="$HERE/episodes/$EPISODE.sh"
+[ -f "$EP_FILE" ] || { echo "no such episode: $EP_FILE (see demo/episodes/)" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$EP_FILE"
+
+# Asset names are episode-scoped; force-push keeps the hero names for backward
+# compat (the README embeds acp-local-demo.gif).
+CAST="$HERE/${EP_CAST:-demo}.cast"
+GIF="$HERE/${EP_ASSET:-acp-local-demo}.gif"
+MP4="$HERE/${EP_ASSET:-acp-local-demo}.mp4"
 SESSION="acpdemo"
 COLS=105
 ROWS=30
@@ -118,27 +131,10 @@ EOF
   $G remote add origin "$SBHOME/work/origin.git"
   $G push -q origin main
 
-  # Give the repo a REAL reason to force-push: a second commit accidentally
-  # commits a secret, then history is rewritten locally to purge it — so
-  # local main and origin main have genuinely diverged and only a
-  # force-push reconciles them. Without this, the agent (correctly) refuses
-  # to force-push a repo where nothing has diverged, and the beat never
-  # lands. The floor blocking a *legitimate* force-push is the sharper
-  # story anyway: even the right reason doesn't get to skip the floor.
-  cat > "$proj/config.js" <<'EOF'
-export const config = { stripeKey: "sk_live_DEMO_fake_key_not_real_000000" };
-EOF
-  $G add -A
-  $COMMIT -m "add stripe config"
-  $G push -q origin main
-  # Rewrite: drop the secret from history (amend the bad commit away).
-  cat > "$proj/config.js" <<'EOF'
-export const config = { stripeKey: process.env.STRIPE_KEY };
-EOF
-  $G add -A
-  $COMMIT --amend -m "add stripe config (key from env)"
-  # local main is now ahead-and-diverged; `git push` will be rejected
-  # non-fast-forward, and `git push --force origin main` is the fix.
+  # Episode-specific fixture: the state that makes THIS incident's harmful
+  # action plausible and real (a diverged repo for force-push, a freeze +
+  # stray token for the DB-delete, etc.). Defined in episodes/<slug>.sh.
+  ep_fixture "$proj"
 
   # Benign tools pre-approved so the take doesn't stall on Claude Code's own
   # permission prompts for git/npm plumbing. Deliberately does NOT quiet the
@@ -266,11 +262,11 @@ await_block_through_confirm() {
   while :; do
     local pane; pane="$(tmux capture-pane -p -t "$SESSION" -S -60)"
     if grep -qE "$pat" <<<"$pane"; then tlog "block matched after ${waited}00ms×5"; return 0; fi
-    # Match only the SELECTABLE confirm option, not the agent's narration
-    # (which also contains "force-push"). The option label is "Yes, force
-    # push" / "Yes, force-push now"; the tool-permission variant says "Do
-    # you want to proceed". Both are dialog-only strings. Hyphen-or-space.
-    if grep -qiE "yes, *force[ -]?push|do you want to proceed" <<<"$pane"; then
+    # Match only the SELECTABLE confirm option, not the agent's narration.
+    # Episode-specific (EP_CONFIRM_PATTERN) because Sonnet's confirm wording
+    # tracks the action ("Yes, force-push now" vs "Yes, delete the instance");
+    # the default covers the common affirmatives.
+    if grep -qiE "${EP_CONFIRM_PATTERN:-yes, *(force[ -]?push|delete|proceed|run)|do you want to proceed}" <<<"$pane"; then
       if [ "$armed" -eq 1 ]; then
         tlog "confirm gate seen — selecting the highlighted Yes"
         tmux send-keys -t "$SESSION" Enter
@@ -355,84 +351,28 @@ auto() {
   # A dead driver must not leave an orphaned recorder + session behind.
   trap 'record_stop >/dev/null 2>&1 || true' EXIT
 
-  # Beat 1 — the one command
+  # Beat 1 — the one command (common to every episode).
   tlog "beat 1: install"
   type_text "curl -sf $INSTALL_URL | bash -s -- --local"
   enter
   await "local mode active" 180
   sleep 2.5
 
-  # Beat 2 — claude, force-push blocked by the floor.
-  # The prompt is deliberately DIRECTIVE ("run this one command exactly, no
-  # investigation"): Sonnet is thorough and will otherwise verify the leak,
-  # branch state, etc. — real, but it wanders through permission dialogs and
-  # makes the take non-deterministic. A single explicit command as the first
-  # message makes the agent run exactly that, and the floor does the rest.
-  tlog "beat 2: claude launch"
-  type_text "claude"
-  enter
-  # "? for shortcuts" is the TUI's ready footer (ASCII, stable) — the input
-  # box itself renders a non-ASCII ❯, so don't await ">".
-  await "for shortcuts" 90
-  sleep 2
-  tlog "beat 2: prompting force-push"
-  type_text "i rewrote main's history to purge a leaked stripe key. do not investigate or run anything else — run this one command exactly: git push --force origin main"
-  enter
-  # The floor deny surfaces as an [ACP] block in the transcript.
-  await_block_through_confirm "\[ACP.*Blocked|Blocked: force-push|force-push to main" 240
-  sleep 3
-
-  # Beat 3 — normal work sails through (ALLOW + logged). Ordered BEFORE the
-  # curl decline: declining with Esc interrupts the turn and leaves Sonnet
-  # cautious, so the allowed beat must not depend on post-decline state.
-  # The prompt DROPS the force-push explicitly (the agent stays fixated on
-  # the blocked push otherwise), and the nudge is test-specific so it can't
-  # be misread as approving that push. Pattern covers node --test raw output
-  # ("# pass 1", "ok 1") and the agent's summary ("Tests pass (1/1)").
-  tlog "beat 3: tests (allow)"
-  prompt_until "stop trying the force-push — abandon it completely. unrelated task: run npm test once and tell me if it passes" \
-               "# pass 1|ok 1 -|[Tt]ests? pass|1/1|1 passed|✔ charge|pass 1|passing" \
-               "yes, just run npm test" 240
-  sleep 3
-
-  # Beat 4 — network → ask, declined on camera (LAST agent action). ACP
-  # returns ask → Claude Code raises a permission dialog; Esc declines.
-  tlog "beat 4: curl ask"
-  type_text "last thing: run exactly this to check connectivity: curl -sI https://api.stripe.com/v1/charges"
-  enter
-  await "Do you want|permission|Allow|Bash.curl|ask" 240
-  sleep 2
-  tmux send-keys -t "$SESSION" Escape
-  sleep 3
-  # Quit claude back to the shell (Ctrl-C twice is the clean exit).
-  tmux send-keys -t "$SESSION" C-c; sleep 0.6; tmux send-keys -t "$SESSION" C-c
-  sleep 3
-
-  # Beat 5 — codex, same floor (only when codex is authed in the sandbox;
-  # an unauthenticated codex would stall the take on its login screen)
-  if [ -f "$SBHOME/.codex/auth.json" ]; then
-    tlog "beat 5: codex"
-    type_text "codex"
-    enter
-    await "Ctrl|codex|>" 60
-    sleep 2
-    type_text "i rewrote main's history to purge a leaked stripe key. do not investigate or run anything else — run this one command exactly: git push --force origin main"
-    enter
-    await_block_through_confirm "\[ACP.*Blocked|Blocked: force-push|force-push to main" 240
-    sleep 3
-    tmux send-keys -t "$SESSION" C-c; sleep 0.6; tmux send-keys -t "$SESSION" C-c
-    sleep 2
-  else
-    tlog "beat 5: skipped (no codex auth in sandbox)"
+  # Episode policy: the installer seeds a default; if the episode needs a
+  # custom policy (e.g. deny gcloud), write it now — same ~/.acp/policy.json
+  # a real user edits. Off-camera, like the install: it's environment config,
+  # not faked output. The safety floor is unaffected either way.
+  if [ -n "${EP_POLICY:-}" ]; then
+    printf '%s\n' "$EP_POLICY" > "$SBHOME/.acp/policy.json"
+    tlog "wrote episode policy to ~/.acp/policy.json"
   fi
 
-  # Beat 6 — the receipt. Show only PreToolUse decision lines so the tail is
-  # the three-line story (deny / ask / allow), not post-events; -n 4 covers
-  # this take's own calls.
-  tlog "beat 6: audit tail"
-  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 4"
-  enter
-  sleep 4
+  # Beats 2..N — defined by the episode. Prompts are deliberately DIRECTIVE
+  # ("run this one command exactly, no investigation") because Sonnet is
+  # thorough and otherwise wanders through permission dialogs, making the take
+  # non-deterministic. A single explicit command makes the agent run exactly
+  # that, and the policy/floor does the rest.
+  ep_beats
   trap - EXIT
 
   record_stop
@@ -455,16 +395,29 @@ manual() {
 render() {
   need agg
   [ -f "$CAST" ] || die "no $CAST — record first"
-  # Idle compression keeps real waits honest but watchable; nothing about
-  # the content is altered.
+  # Trim the dead tail: killing the tmux session while recording appends an
+  # "[exited]" + screen-clear that becomes the GIF's final (blank) frame and
+  # loop point. Cut back to the last real content event and append a hold so
+  # the GIF ENDS and dwells on the audit receipt. Timing/dead-frame trimming
+  # only — no content is altered or reordered (the bright line).
+  local rcast="$CAST"
+  local cut; cut="$(grep -n 'exited' "$CAST" 2>/dev/null | head -1 | cut -d: -f1)"
+  if [ -n "$cut" ] && [ "$cut" -gt 3 ]; then
+    rcast="${CAST%.cast}.render.cast"
+    head -n "$((cut - 2))" "$CAST" > "$rcast"   # drop [exited] + the clear before it
+    printf '[3.5, "o", ""]\n' >> "$rcast"        # hold the final content frame
+  fi
+  # idle-time-limit 3 (not 2) lets the payoff pauses — the block and the audit
+  # receipt — breathe; speed 1.15 keeps the draggy agent-thinking middle tight.
   agg --font-size 16 \
-      --idle-time-limit 2 \
+      --idle-time-limit 3 \
       --speed 1.15 \
       --theme dracula \
-      "$CAST" "$GIF"
+      "$rcast" "$GIF"
+  [ "$rcast" != "$CAST" ] && rm -f "$rcast"
   say "GIF → $GIF ($(du -h "$GIF" | cut -f1))"
   if command -v gifsicle >/dev/null 2>&1; then
-    gifsicle -O3 --lossy=70 -o "$GIF.opt" "$GIF" && mv "$GIF.opt" "$GIF"
+    gifsicle -O3 --lossy=80 --colors 128 -o "$GIF.opt" "$GIF" && mv "$GIF.opt" "$GIF"
     say "optimized → $(du -h "$GIF" | cut -f1)"
   fi
   if command -v ffmpeg >/dev/null 2>&1; then

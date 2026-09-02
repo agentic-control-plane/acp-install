@@ -102,7 +102,7 @@ HAS_HERMES=false
 if command -v hermes &> /dev/null; then
   HAS_HERMES=true
 fi
-# Cloud-only: hermes-acp governs via a workspace token (without one it passes
+# Cloud-only: acp-hermes governs via a workspace token (without one it passes
 # through), so --local skips the plugin install rather than wiring a no-op.
 if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = true ]; then
   echo "  ${C_DIM}Hermes detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
@@ -114,7 +114,7 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   # If hermes lives in a pipx venv, the plugin must be injected there —
   # a bare pip install lands in the wrong environment.
   if command -v pipx &> /dev/null && pipx list 2>/dev/null | grep -qi "package hermes"; then
-    pipx inject hermes hermes-acp --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+    pipx inject hermes acp-hermes --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
   fi
   # Otherwise install with the same interpreter that runs hermes (shebang),
   # falling back to plain pip. PEP 668 boxes will refuse — that's the
@@ -123,18 +123,18 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
     HERMES_BIN="$(command -v hermes)"
     HERMES_PY="$(head -1 "$HERMES_BIN" 2>/dev/null | sed -n 's/^#!//p')"
     if [ -n "$HERMES_PY" ] && [ -x "$HERMES_PY" ]; then
-      "$HERMES_PY" -m pip install --upgrade hermes-acp >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+      "$HERMES_PY" -m pip install --upgrade acp-hermes >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
     fi
   fi
   if [ "$HERMES_PLUGIN_OK" = false ]; then
-    pip install --upgrade hermes-acp >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+    pip install --upgrade acp-hermes >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
   fi
   if [ "$HERMES_PLUGIN_OK" = true ] && hermes plugins enable acp >/dev/null 2>&1; then
     echo "  ${C_GREEN}✓ Hermes governed${C_RESET} — next: acp-hermes login   (headless box: set ACP_BEARER_TOKEN instead)"
   else
     echo "  Couldn't install automatically (often a PEP 668 managed environment)."
     echo "  Run it in your Python env of choice:"
-    echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
+    echo "    pip install acp-hermes && hermes plugins enable acp && acp-hermes login"
     echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
   fi
   echo ""
@@ -150,7 +150,7 @@ DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 if command -v dsh &> /dev/null || [ -d "$DSH_HOME_DIR/profiles" ]; then
   HAS_DSH=true
 fi
-# Cloud-only like Hermes: dsh-plugin-acp needs a workspace credential; local
+# Cloud-only like Hermes: @agenticcontrolplane/dsh needs a workspace credential; local
 # decisions aren't wired there yet.
 if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = true ]; then
   echo "  ${C_DIM}DeepSeek Harness detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
@@ -166,7 +166,7 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
       _dsh_prof_name="$(basename "$_dsh_prof")"
       # The installation's shared node_modules dir is not a profile.
       [ "$_dsh_prof_name" = "node_modules" ] && continue
-      if dsh plugin --profile "$_dsh_prof_name" add dsh-plugin-acp >/dev/null 2>&1; then
+      if dsh plugin --profile "$_dsh_prof_name" add @agenticcontrolplane/dsh >/dev/null 2>&1; then
         DSH_PROFILES_INSTALLED=$((DSH_PROFILES_INSTALLED + 1))
       else
         DSH_PROFILES_FAILED=$((DSH_PROFILES_FAILED + 1))
@@ -180,7 +180,7 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
     # a Node 20 default breaks it). Print the manual path instead of guessing.
     echo "  Couldn't finish automatically (no profiles yet, or dsh isn't on PATH here — note dsh needs Node 22)."
     echo "  Run it against the profile you use:"
-    echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+    echo "    dsh plugin --profile <your-profile> add @agenticcontrolplane/dsh"
     echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
   fi
   echo ""
@@ -220,6 +220,45 @@ if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
     echo "  Couldn't fetch automatically. Install it by hand:"
     echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
     echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
+  fi
+  echo ""
+fi
+
+# Prime Agent (Prime Intellect) — a pi-mono hard fork that kept pi's extension
+# API; governed via the same kind of native TypeScript extension on its
+# tool_call / tool_result events (prime-agent-acp-plugin adds an argv-based
+# headless fix for prime's hasUI print-mode bug). Same one-front-door rule.
+# Extensions under ~/.prime/agent/extensions/ load without a project-trust
+# prompt. Fail-open: a fetch failure prints the manual path.
+HAS_PRIME=false
+PRIME_EXT_DIR="$HOME/.prime/agent/extensions"
+# The ~/.prime/agent dir is the reliable signal; `command -v prime-agent`
+# alone could match an unrelated binary, so require the dir on PATH fallback.
+if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent &> /dev/null && [ -d "$HOME/.prime" ]; }; then
+  HAS_PRIME=true
+fi
+# Cloud-only like pi: the extension reads ~/.acp/credentials; local decisions
+# aren't wired there yet.
+if [ "$HAS_PRIME" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Prime Agent detected — skipped in --local mode (its ACP extension needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_PRIME" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Prime Agent — installing the ACP extension…"
+  PRIME_EXT_OK=false
+  if mkdir -p "$PRIME_EXT_DIR" 2>/dev/null && curl -sf \
+    https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts \
+    -o "$PRIME_EXT_DIR/acp.ts" 2>/dev/null && [ -s "$PRIME_EXT_DIR/acp.ts" ]; then
+    PRIME_EXT_OK=true
+  fi
+  if [ "$PRIME_EXT_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Prime Agent governed${C_RESET} — extension written to ~/.prime/agent/extensions/acp.ts; active from the next session or /reload (needs Node 22.8+)."
+  else
+    # Network refused or the extensions dir isn't writable — print the manual
+    # path rather than guessing.
+    echo "  Couldn't fetch automatically. Install it by hand:"
+    echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts -o ~/.prime/agent/extensions/acp.ts"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/prime-agent"
   fi
   echo ""
 fi
@@ -270,6 +309,79 @@ if [ "$HAS_MUSE" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
+# Grok Build (xAI) — hooks register user-globally in ~/.grok/hooks/*.json (no
+# trust prompt). Two raw-file fetches: the hook itself into ~/.acp/hooks and
+# the registration JSON into ~/.grok/hooks. NOTE: Grok also auto-loads hooks
+# from ~/.claude/settings.json but doesn't parse Claude's output vocabulary,
+# so the Claude hook alone would fire and be ignored — this purpose-built hook
+# is the governed path. Fail-open: any refusal prints the manual commands.
+HAS_GROK=false
+if [ -d "$HOME/.grok" ] || command -v grok &> /dev/null; then
+  HAS_GROK=true
+fi
+# Cloud-only like Hermes/dsh/pi/Muse: the hook reads ~/.acp/credentials.
+if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Grok Build detected — skipped in --local mode (its ACP hook needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Grok Build — installing the ACP hook…"
+  GROK_HOOK_OK=false
+  _grok_raw="https://raw.githubusercontent.com/agentic-control-plane/grok-build-acp-plugin/main"
+  if mkdir -p "$HOME/.acp/hooks/grok-build" "$HOME/.grok/hooks" 2>/dev/null \
+    && curl -fsSL "$_grok_raw/hook.mjs" -o "$HOME/.acp/hooks/grok-build/hook.mjs" 2>/dev/null \
+    && curl -fsSL "$_grok_raw/hooks/acp.json" -o "$HOME/.grok/hooks/acp.json" 2>/dev/null; then
+    GROK_HOOK_OK=true
+  fi
+  if [ "$GROK_HOOK_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Grok Build governed${C_RESET} — hook registered user-globally; fires in every mode, always-approve included; active from the next Grok session."
+    INSTALLED="${INSTALLED:+$INSTALLED, }Grok Build"
+  else
+    echo "  Couldn't finish automatically (curl refused or a directory wasn't writable). Run:"
+    echo "    mkdir -p ~/.acp/hooks/grok-build ~/.grok/hooks"
+    echo "    curl -fsSL $_grok_raw/hook.mjs -o ~/.acp/hooks/grok-build/hook.mjs"
+    echo "    curl -fsSL $_grok_raw/hooks/acp.json -o ~/.grok/hooks/acp.json"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/grok-build"
+  fi
+  echo ""
+fi
+
+# Google Antigravity (agy) — CLI, IDE, and app read ONE shared registration at
+# ~/.gemini/config/hooks.json. We MERGE under our own "acp" key via node (the
+# hook needs node anyway) — never overwrite: the file may hold user hooks.
+HAS_AGY=false
+if command -v agy &> /dev/null || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+  HAS_AGY=true
+fi
+if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = true ]; then
+  echo "  ${C_DIM}Antigravity detected — skipped in --local mode (its ACP hook needs a workspace; local decisions aren't wired there yet).${C_RESET}"
+  echo ""
+fi
+if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo "  Detected Google Antigravity — installing the ACP hook…"
+  AGY_HOOK_OK=false
+  _agy_raw="https://raw.githubusercontent.com/agentic-control-plane/antigravity-acp-plugin/main"
+  if command -v node &> /dev/null \
+    && mkdir -p "$HOME/.acp/hooks/antigravity" "$HOME/.gemini/config" 2>/dev/null \
+    && curl -fsSL "$_agy_raw/hook.mjs" -o "$HOME/.acp/hooks/antigravity/hook.mjs" 2>/dev/null \
+    && curl -fsSL "$_agy_raw/hooks/acp.json" -o "$HOME/.acp/hooks/antigravity/acp.json" 2>/dev/null \
+    && node -e 'const fs=require("fs");const p=process.env.HOME+"/.gemini/config/hooks.json";let cur={};try{cur=JSON.parse(fs.readFileSync(p,"utf8"))}catch(e){};const add=JSON.parse(fs.readFileSync(process.env.HOME+"/.acp/hooks/antigravity/acp.json","utf8"));fs.writeFileSync(p,JSON.stringify(Object.assign(cur,add),null,2))' 2>/dev/null; then
+    AGY_HOOK_OK=true
+  fi
+  if [ "$AGY_HOOK_OK" = true ]; then
+    echo "  ${C_GREEN}✓ Antigravity governed${C_RESET} — registration merged into the shared hooks.json (CLI, IDE, and app); ACP asks render as native force_ask prompt cards; active from the next session."
+    INSTALLED="${INSTALLED:+$INSTALLED, }Antigravity"
+  else
+    echo "  Couldn't finish automatically (node/curl refused or a directory wasn't writable). Run:"
+    echo "    mkdir -p ~/.acp/hooks/antigravity ~/.gemini/config"
+    echo "    curl -fsSL $_agy_raw/hook.mjs -o ~/.acp/hooks/antigravity/hook.mjs"
+    echo "    curl -fsSL $_agy_raw/hooks/acp.json -o ~/.acp/hooks/antigravity/acp.json"
+    echo "    node -e 'see https://agenticcontrolplane.com/integrations/antigravity#manual-install'"
+    echo "  Guide: https://agenticcontrolplane.com/integrations/antigravity"
+  fi
+  echo ""
+fi
+
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
 if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
   HAS_OPENCODE=true
@@ -278,11 +390,13 @@ fi
 if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ]; then
   # Hermes-only / dsh-only / pi-only box: the plugin paths above already
   # handled them — success, not "nothing detected".
-  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ]; then
+  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ] || [ "$HAS_MUSE" = true ] || [ "$HAS_GROK" = true ]; then
     _found=""
     [ "$HAS_HERMES" = true ] && _found="Hermes"
     [ "$HAS_DSH" = true ] && _found="${_found:+$_found + }DeepSeek Harness"
     [ "$HAS_PI" = true ] && _found="${_found:+$_found + }pi"
+    [ "$HAS_MUSE" = true ] && _found="${_found:+$_found + }Muse Code"
+    [ "$HAS_GROK" = true ] && _found="${_found:+$_found + }Grok Build"
     if [ "$LOCAL_MODE" = true ]; then
       echo "  $_found was all we found — local mode doesn't govern these yet; re-run without --local."
     else
@@ -291,16 +405,19 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
     exit 0
   fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Prime Agent, Muse Code, Grok Build, Antigravity, Hermes Agent, DeepSeek Harness"
   echo "  Hermes Agent? It has a native pip plugin instead:"
-  echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
+  echo "    pip install acp-hermes && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
   echo "  DeepSeek Harness? Same idea, its native plugin system:"
-  echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+  echo "    dsh plugin --profile <your-profile> add @agenticcontrolplane/dsh"
   echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
   echo "  pi (earendil-works)? A native extension file:"
   echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
   echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
+  echo "  Prime Agent? Same idea, a native extension file:"
+  echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts -o ~/.prime/agent/extensions/acp.ts"
+  echo "  Guide: https://agenticcontrolplane.com/integrations/prime-agent"
   echo ""
   echo "  Install one first, then re-run this script."
   exit 1
@@ -320,6 +437,21 @@ fi
 if [ "$HAS_OPENCODE" = true ]; then
   if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + opencode"; else TARGETS="opencode"; fi
 fi
+
+# Machine-readable form of the same detection, sent with the device-code
+# request so the minted key records WHICH harness it was wired for. The
+# gateway defaults this to "unknown" when absent, which is what every key
+# minted through device flow has been labelled until now — and device flow
+# is the best-converting install path we have, so it was also the only one
+# we could not attribute. Gateway clips to 64 chars.
+CLIENT_SLUG=""
+_add_slug() { if [ -n "$CLIENT_SLUG" ]; then CLIENT_SLUG="$CLIENT_SLUG+$1"; else CLIENT_SLUG="$1"; fi; }
+[ "$HAS_CLAUDE" = true ] && _add_slug "claude-code"
+[ "$HAS_CURSOR" = true ] && _add_slug "cursor"
+[ "$HAS_CODEX" = true ] && _add_slug "codex"
+[ "$HAS_OPENCLAW" = true ] && _add_slug "openclaw"
+[ "$HAS_OPENCODE" = true ] && _add_slug "opencode"
+[ -n "$CLIENT_SLUG" ] || CLIENT_SLUG="cli"
 
 echo ""
 echo "  Agentic Control Plane"
@@ -353,12 +485,12 @@ else
   GOVERN_SOURCE="bundled fallback"
   cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
 #!/usr/bin/env node
-import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } from "fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
 const ACP_API = process.env.ACP_API_BASE || "https://api.agenticcontrolplane.com";
-const PLUGIN_VERSION = "0.4.0";
+const PLUGIN_VERSION = "0.5.0";
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time: "claude-code-plugin",
 // "cursor", "codex", etc. Falls back to claude-code-plugin for backward compat.
@@ -559,6 +691,72 @@ async function handlePreToolUse() {
   process.exit(0);
 }
 
+// Cost from the hook, no proxy required. The harness transcript (Claude
+// Code's session JSONL, handed to us as transcript_path) records every
+// model turn's usage. Read only what arrived since the last report — a
+// per-transcript byte offset in ~/.acp/transcript-offsets.json — and ship
+// the turns as `model_usage` on the tool-output call we already make. The
+// gateway prices them at list rates and labels them API-rate equivalents.
+// Bounded: at most 2 MB read and 50 turns sent per call; any failure
+// returns nothing and never delays the hook.
+const TRANSCRIPT_OFFSETS = join(ACP_DIR, "transcript-offsets.json");
+const TRANSCRIPT_READ_CAP = 2 * 1024 * 1024;
+const TRANSCRIPT_MAX_TURNS = 50;
+function collectTranscriptUsage(path) {
+  if (typeof path !== "string" || !path || !existsSync(path)) return undefined;
+  let offsets = {};
+  try { offsets = JSON.parse(readFileSync(TRANSCRIPT_OFFSETS, "utf8")) || {}; } catch { offsets = {}; }
+  let size = 0;
+  try { size = statSync(path).size; } catch { return undefined; }
+  let start = typeof offsets[path] === "number" && offsets[path] <= size ? offsets[path] : 0;
+  if (size - start > TRANSCRIPT_READ_CAP) start = size - TRANSCRIPT_READ_CAP;
+  if (size <= start) return undefined;
+  let chunk = "";
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      readSync(fd, buf, 0, buf.length, start);
+      chunk = buf.toString("utf8");
+    } finally { closeSync(fd); }
+  } catch { return undefined; }
+  // Only consume complete lines; a partial trailing line waits for next time.
+  const lastNl = chunk.lastIndexOf("\n");
+  if (lastNl < 0) return undefined;
+  const consumed = Buffer.byteLength(chunk.slice(0, lastNl + 1), "utf8");
+  const turns = [];
+  for (const line of chunk.slice(0, lastNl).split("\n")) {
+    if (!line || line.indexOf('"usage"') < 0) continue;
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    const m = e && e.message;
+    const u = m && m.usage;
+    if (!u || typeof u !== "object" || (e.type !== "assistant" && m.role !== "assistant")) continue;
+    const id = (typeof m.id === "string" && m.id) || (typeof e.requestId === "string" && e.requestId) || (typeof e.uuid === "string" && e.uuid);
+    if (!id || typeof m.model !== "string") continue;
+    turns.push({
+      id, model: m.model,
+      input_tokens: u.input_tokens || 0,
+      cache_read_input_tokens: u.cache_read_input_tokens || 0,
+      cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+      output_tokens: u.output_tokens || 0,
+      ts: typeof e.timestamp === "string" ? e.timestamp : undefined,
+    });
+  }
+  // Advance the offset only past what we are sending; keep the file small.
+  try {
+    const keep = {};
+    let n = 0;
+    for (const [k, v] of Object.entries(offsets)) { if (k !== path && existsSync(k) && n++ < 40) keep[k] = v; }
+    keep[path] = start + consumed;
+    writeFileSync(TRANSCRIPT_OFFSETS, JSON.stringify(keep));
+  } catch {}
+  // Same-id turns can repeat across streamed chunks; keep the last (fullest).
+  const byId = new Map();
+  for (const t of turns) byId.set(t.id, t);
+  const out = Array.from(byId.values()).slice(-TRANSCRIPT_MAX_TURNS);
+  return out.length ? out : undefined;
+}
+
 async function handlePostToolUse() {
   let outputStr = "";
   try {
@@ -577,6 +775,7 @@ async function handlePostToolUse() {
     cwd: input.cwd,
     hook_event_name: "PostToolUse",
     agent_tier: resolveAgentTier(),
+    model_usage: collectTranscriptUsage(input.transcript_path),
   });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000);
@@ -642,11 +841,33 @@ function shellTokens(cmd) {
   return out;
 }
 
-const WRAPPERS = new Set(["sudo", "env", "nice", "nohup", "stdbuf", "timeout", "time", "xargs", "command", "doas"]);
+// Wrappers that prefix another command. `valueFlags` are the flags whose value
+// is a SEPARATE token (`sudo -u root`, `nice -n 10`); `operands` is how many
+// positional operands the wrapper itself consumes before the real command
+// (`timeout [flags] DURATION cmd…`). Skipping flags but not these operands is
+// exactly the hole of #19: `timeout 5 rm -rf ~` classified as Bash.5.
+const WRAPPERS = new Map([
+  ["sudo", { valueFlags: new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"]), operands: 0 }],
+  ["doas", { valueFlags: new Set(["-u", "-C"]), operands: 0 }],
+  ["env", { valueFlags: new Set(["-u", "-C", "-P", "-S"]), operands: 0 }],
+  ["nice", { valueFlags: new Set(["-n", "--adjustment"]), operands: 0 }],
+  ["nohup", { valueFlags: new Set(), operands: 0 }],
+  ["setsid", { valueFlags: new Set(), operands: 0 }],
+  ["stdbuf", { valueFlags: new Set(["-i", "-o", "-e"]), operands: 0 }],
+  ["timeout", { valueFlags: new Set(["-s", "--signal", "-k", "--kill-after"]), operands: 1 }],
+  ["time", { valueFlags: new Set(), operands: 0 }],
+  ["xargs", { valueFlags: new Set(["-I", "-n", "-P", "-L", "-d", "-a", "-E", "-s"]), operands: 0 }],
+  ["command", { valueFlags: new Set(), operands: 0 }],
+  ["builtin", { valueFlags: new Set(), operands: 0 }],
+]);
 
-/** Split a command line into its piped/chained segments (on unquoted | & ; and
- *  newlines), so the floor inspects every command in a compound line, not just
- *  the first (e.g. `echo hi && rm -rf ~`). */
+// Shell keywords are never the governed binary: `if rm -rf /; then …` and
+// `{ rm -rf /; }` must classify as rm, not stall on the keyword.
+const SHELL_KEYWORDS = new Set(["if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "{", "}", "(", ")", "!"]);
+
+/** Split a command line into its piped/chained segments (on unquoted | & ; ( )
+ *  and newlines), so every command in a compound line is inspected, not just
+ *  the first (e.g. `echo hi && rm -rf ~`, `( rm -rf ~ )`, `$(rm -rf ~)`). */
 function splitSegments(cmd) {
   const segs = [];
   let buf = "";
@@ -654,22 +875,36 @@ function splitSegments(cmd) {
   for (const ch of String(cmd)) {
     if (quote) { buf += ch; if (ch === quote) quote = null; continue; }
     if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
-    if (ch === "|" || ch === "&" || ch === ";" || ch === "\n") { if (buf.trim()) segs.push(buf.trim()); buf = ""; continue; }
+    if (ch === "|" || ch === "&" || ch === ";" || ch === "\n" || ch === "(" || ch === ")") { if (buf.trim()) segs.push(buf.trim()); buf = ""; continue; }
     buf += ch;
   }
   if (buf.trim()) segs.push(buf.trim());
   return segs;
 }
 
-/** Strip leading env-assignments and benign wrappers; return { bin, args } where
- *  bin is the canonical binary (basename, no path) and args are its arguments. */
+/** Strip leading env-assignments, shell keywords, and benign wrappers —
+ *  including each wrapper's own option-arguments and positional operands
+ *  (`sudo -u root …`, `timeout 5 …`, `nice -n 10 …`) — and return
+ *  { bin, args } where bin is the canonical binary (basename, no path). */
 function parseCommand(cmd) {
   const toks = shellTokens(cmd);
   let i = 0;
-  while (i < toks.length) {
+  let hops = 0;
+  while (i < toks.length && hops++ < 32) {
     const t = toks[i];
     if (t.includes("=") && !t.startsWith("-")) { i++; continue; }        // FOO=bar
-    if (WRAPPERS.has(t)) { i++; while (i < toks.length && toks[i].startsWith("-")) i++; continue; }
+    if (SHELL_KEYWORDS.has(t)) { i++; continue; }                        // if / { / do …
+    const w = WRAPPERS.get(t);
+    if (w) {
+      i++;
+      while (i < toks.length && toks[i].startsWith("-")) {
+        const flag = toks[i];
+        i++;
+        if (w.valueFlags.has(flag)) i++;                                 // sudo -u USER
+      }
+      for (let n = 0; n < w.operands && i < toks.length; n++) i++;       // timeout DURATION
+      continue;
+    }
     return { bin: t.split("/").pop(), args: toks.slice(i + 1) };
   }
   return { bin: "", args: [] };
@@ -693,33 +928,119 @@ function safeParse(s) { try { return JSON.parse(s); } catch { return {}; } }
 // without also governing `git status`. Keep this small and obvious.
 const SUBCOMMAND_BINS = new Set(["git", "gh", "docker", "kubectl", "npm", "pnpm", "yarn", "pip", "pip3", "gcloud", "aws", "systemctl"]);
 
-/** First non-flag argument (the subcommand), lowercased, or undefined. */
+// Global flags whose VALUE is a separate token, so the value is never
+// mistaken for the subcommand: `git -C /repo push` is a push (was the
+// malformed key "Bash.git.." — #19), `kubectl -n prod delete` is a delete.
+const FLAGS_WITH_VALUE = new Set(["-C", "-c", "-H", "-n", "-R", "--git-dir", "--work-tree", "--namespace", "--context", "--cluster", "--kubeconfig", "--prefix", "--profile", "--project", "--config", "--repo"]);
+
+/** First non-flag argument (the subcommand), lowercased, or undefined —
+ *  skipping over flags AND their separate-token values. */
 function firstSubcommand(args) {
-  for (const a of args) { if (!a.startsWith("-")) return a.toLowerCase(); }
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("-")) {
+      if (FLAGS_WITH_VALUE.has(a)) i++;                                  // git -C /repo
+      continue;
+    }
+    return a.toLowerCase();
+  }
   return undefined;
+}
+
+// ── Compound-command classification ───────────────────────────────────
+// A compound command classifies by its MOST PRIVILEGED segment, and decide()
+// policy-checks EVERY segment (strictest verdict wins) — classifying by the
+// first segment let `true && gcloud …` run under Bash.true (#18). Rank
+// mirrors the gateway's fix for this class (gsc#516 / gsc#750): benign
+// navigational bins lose to unknown bins, which lose to privileged bins.
+
+/** Benign / navigational binaries — never the interesting part of a
+ *  compound command. */
+const BENIGN_BINS = new Set([
+  "cd", "echo", "printf", "true", "false", "pwd", "ls", "cat", "head", "tail",
+  "less", "more", "grep", "rg", "wc", "sort", "uniq", "cut", "tr", "date",
+  "sleep", "which", "type", "test", "[", "[[", "dirname", "basename",
+  "readlink", "ps", "diff", "jq", "yq", "tee", "read", "exit", "return",
+  "wait", "export", "set", "unset", "shift", "local", "declare",
+]);
+
+/** Binary classes that outrank an unknown binary when picking a compound
+ *  command's classification: deploy/infra, source control, deletion, network
+ *  egress, db clients, interpreters. */
+const PRIVILEGED_BINS = new Set([
+  "gcloud", "aws", "azure", "firebase", "terraform", "docker", "kubectl",
+  "git", "gh", "npm", "pnpm", "yarn", "pip", "pip3", "rm", "mv", "chmod",
+  "chown", "curl", "wget", "ssh", "scp", "rsync", "kill", "sed", "find",
+  "psql", "mysql", "mariadb", "sqlite3", "systemctl", "launchctl",
+  "powershell", "pwsh", "python", "python3", "node", "ruby", "perl", "cargo",
+  "go", "make", "stripe", "vercel", "flyctl", "fly", "heroku", "tar", "open",
+  "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "eval",
+]);
+
+/** Privilege rank for most-privileged-segment selection: benign 0,
+ *  unknown 1, privileged 2. Ties resolve to the EARLIEST unit. */
+function privilegeRank(bin) {
+  if (BENIGN_BINS.has(bin)) return 0;
+  if (PRIVILEGED_BINS.has(bin)) return 2;
+  return 1;
+}
+
+/** Every governed unit of a Bash command: one per segment, plus the payload
+ *  of any `bash -c "…"` / `eval …` hand-off (recursed, capped), so neither a
+ *  benign prefix nor an interpreter hop hides a unit from policy. */
+function commandUnits(cmd, depth = 0) {
+  const units = [];
+  if (depth > 3) return units;
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    if (!bin) continue;
+    units.push({ bin, args, seg });
+    const inner = innerShellCommand(bin, args);
+    if (inner) units.push(...commandUnits(inner, depth + 1));
+  }
+  return units;
+}
+
+/** Dotted policy key for one command unit. */
+function unitKey(u) {
+  if (u.bin === "curl" || u.bin === "wget") {
+    const host = firstHost(u.seg);
+    return host ? `Bash.curl.${host}` : "Bash.curl";
+  }
+  if (SUBCOMMAND_BINS.has(u.bin)) {
+    const sub = firstSubcommand(u.args);
+    return sub ? `Bash.${u.bin}.${sub}` : `Bash.${u.bin}`;
+  }
+  return `Bash.${u.bin}`;
+}
+
+/** The units of a Bash-shaped tool call, or null for other tools. */
+function bashUnits(toolName, toolInput) {
+  const name = String(toolName || "");
+  if (name !== "Bash" && name !== "run_terminal_cmd" && name !== "shell") return null;
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+  return commandUnits(String(input.command || input.cmd || ""));
 }
 
 /**
  * Classify a tool call into a dotted policy key, e.g. "Bash.rm",
  * "Bash.git.push", "Bash.curl.api.github.com", "Write", "WebFetch.example.com".
+ * A non-empty command with no classifiable unit is the explicit
+ * "Bash.unknown" (never a malformed or wrong-segment key): still governable
+ * by a Bash.unknown rule, still falls back to "Bash" in the policy walk, and
+ * honestly labeled as unparsed in the audit line rather than silently benign.
  */
 export function classifyTool(toolName, toolInput) {
   const name = String(toolName || "");
   const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
 
   if (name === "Bash" || name === "run_terminal_cmd" || name === "shell") {
-    const cmd = input.command || input.cmd || "";
-    const { bin, args } = parseCommand(cmd);
-    if (!bin) return "Bash";
-    if (bin === "curl" || bin === "wget") {
-      const host = firstHost(cmd);
-      return host ? `Bash.curl.${host}` : "Bash.curl";
-    }
-    if (SUBCOMMAND_BINS.has(bin)) {
-      const sub = firstSubcommand(args);
-      return sub ? `Bash.${bin}.${sub}` : `Bash.${bin}`;
-    }
-    return `Bash.${bin}`;
+    const cmd = String(input.command || input.cmd || "");
+    const units = commandUnits(cmd);
+    if (!units.length) return cmd.trim() ? "Bash.unknown" : "Bash";
+    let best = units[0];
+    for (const u of units) if (privilegeRank(u.bin) > privilegeRank(best.bin)) best = u;
+    return unitKey(best);
   }
   if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "create_file" || name === "edit_file") {
     return "Write";
@@ -750,7 +1071,7 @@ function hasShortOrLongFlag(args, letter, longName) {
   return false;
 }
 
-const RM_DANGER_TARGETS = new Set(["/", "~", "~/", "$HOME", "$HOME/", "${HOME}", ".", "./", "*", "/*", "./*", "~/*"]);
+const RM_DANGER_TARGETS = new Set(["/", "/.", "~", "~/", "$HOME", "$HOME/", "${HOME}", ".", "./", "*", "/*", "./*", "~/*"]);
 
 /** rm with BOTH recursive and force, aimed at a root/home/cwd/glob target. */
 function rmForceFloor(bin, args) {
@@ -783,7 +1104,7 @@ function gitForcePushFloor(bin, args) {
 
 // Shells whose `-c <string>` argument is itself a command line: recurse the
 // floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
-const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"]);
 
 /** If this command hands a string to another interpreter (`bash -c '…'`,
  *  `eval …`), return that inner command line; else undefined. */
@@ -855,6 +1176,7 @@ export function candidates(key) {
 }
 
 const VALID = new Set(["allow", "ask", "deny"]);
+const SEVERITY = { allow: 0, ask: 1, deny: 2 };
 
 /**
  * Decide a tool call locally.
@@ -867,12 +1189,24 @@ export function decide(toolName, toolInput, policy) {
 
   const key = classifyTool(toolName, toolInput);
   const rules = (policy && policy.rules) || {};
-  for (const cand of candidates(key)) {
-    const r = rules[cand];
-    if (VALID.has(r)) {
-      return { decision: r, reason: `local policy: ${cand} → ${r}`, source: "policy", classified: key };
+
+  // EVERY unit of a compound command is policy-checked, and the strictest
+  // matched rule wins (deny > ask > allow) — so `true && gcloud …` cannot
+  // slip a gcloud rule behind a benign first segment (#18).
+  const units = bashUnits(toolName, toolInput);
+  const keys = units && units.length ? [...new Set(units.map(unitKey))] : [key];
+  let hit = null;
+  for (const k of keys) {
+    for (const cand of candidates(k)) {
+      const r = rules[cand];
+      if (VALID.has(r)) {
+        if (!hit || SEVERITY[r] > SEVERITY[hit.r]) hit = { r, cand };
+        break;
+      }
     }
   }
+  if (hit) return { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key };
+
   const def = VALID.has(policy && policy.default) ? policy.default : "allow";
   return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key };
 }
@@ -1371,12 +1705,12 @@ fi
 # ── Step 1d: OpenClaw setup ───────────────────────────────────────────
 
 if [ "$HAS_OPENCLAW" = true ]; then
-  echo "  [OpenClaw] Installing governance plugin..."
-  openclaw plugins install @gatewaystack/acp-governance 2>/dev/null && {
+  echo "  [OpenClaw] Installing the ACP plugin..."
+  openclaw plugins install @agenticcontrolplane/openclaw 2>/dev/null && {
     echo "  ${C_GREEN}✓${C_RESET} [OpenClaw] Plugin installed"
     INSTALLED="${INSTALLED:+$INSTALLED, }OpenClaw"
   } || {
-    echo "  ${C_RED}✗${C_RESET} [OpenClaw] Plugin install failed — try: openclaw plugins install @gatewaystack/acp-governance"
+    echo "  ${C_RED}✗${C_RESET} [OpenClaw] Plugin install failed — try: openclaw plugins install @agenticcontrolplane/openclaw"
   }
 fi
 
@@ -1466,6 +1800,8 @@ POLICY
   echo "  Want team control, cost X-ray, and a shared console across everyone's agents?"
   echo "  Re-run without ${C_DIM}--local${C_RESET} to connect a workspace."
   echo ""
+  echo "  If ACP is useful, a star helps others find it: https://github.com/agentic-control-plane/claude-code-acp-plugin"
+  echo ""
   exit 0
 fi
 
@@ -1521,7 +1857,7 @@ DEVICE_INFO="$(node -e '
       const r = await fetch(API + "/device/code", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ client: process.argv[2] || "cli" }),
       });
       if (!r.ok) process.exit(1);
       const d = await r.json();
@@ -1534,7 +1870,7 @@ DEVICE_INFO="$(node -e '
       ].join("\t"));
     } catch { process.exit(1); }
   })();
-' "$API_BASE" 2>/dev/null || true)"
+' "$API_BASE" "$CLIENT_SLUG" 2>/dev/null || true)"
 
 USER_CODE="$(printf "%s" "$DEVICE_INFO" | cut -f1)"
 VERIFY_URL="$(printf "%s" "$DEVICE_INFO" | cut -f2)"
@@ -1704,6 +2040,10 @@ if [ "$HAS_OPENCLAW" = true ]; then
   echo "  Then restart OpenClaw to activate the plugin"
 fi
 echo ""
+if [ "${ACP_UNGOVERNED:-false}" != true ]; then
+  echo "  If ACP is useful, a star helps others find it: https://github.com/agentic-control-plane/claude-code-acp-plugin"
+  echo ""
+fi
 
 # Exit non-zero when the install finished without a usable key, so the state
 # is detectable by a wrapper, a CI check, or the user's shell — not only by
