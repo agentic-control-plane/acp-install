@@ -405,7 +405,7 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
     exit 0
   fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Prime Agent, Muse Code, Grok Build, Hermes Agent, DeepSeek Harness"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Prime Agent, Muse Code, Grok Build, Antigravity, Hermes Agent, DeepSeek Harness"
   echo "  Hermes Agent? It has a native pip plugin instead:"
   echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
@@ -1638,12 +1638,12 @@ fi
 # ── Step 1d: OpenClaw setup ───────────────────────────────────────────
 
 if [ "$HAS_OPENCLAW" = true ]; then
-  echo "  [OpenClaw] Installing governance plugin..."
-  openclaw plugins install @gatewaystack/acp-governance 2>/dev/null && {
+  echo "  [OpenClaw] Installing the ACP plugin..."
+  openclaw plugins install @agenticcontrolplane/openclaw 2>/dev/null && {
     echo "  ${C_GREEN}✓${C_RESET} [OpenClaw] Plugin installed"
     INSTALLED="${INSTALLED:+$INSTALLED, }OpenClaw"
   } || {
-    echo "  ${C_RED}✗${C_RESET} [OpenClaw] Plugin install failed — try: openclaw plugins install @gatewaystack/acp-governance"
+    echo "  ${C_RED}✗${C_RESET} [OpenClaw] Plugin install failed — try: openclaw plugins install @agenticcontrolplane/openclaw"
   }
 fi
 
