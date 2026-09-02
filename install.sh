@@ -102,7 +102,7 @@ HAS_HERMES=false
 if command -v hermes &> /dev/null; then
   HAS_HERMES=true
 fi
-# Cloud-only: hermes-acp governs via a workspace token (without one it passes
+# Cloud-only: acp-hermes governs via a workspace token (without one it passes
 # through), so --local skips the plugin install rather than wiring a no-op.
 if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = true ]; then
   echo "  ${C_DIM}Hermes detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
@@ -114,7 +114,7 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   # If hermes lives in a pipx venv, the plugin must be injected there —
   # a bare pip install lands in the wrong environment.
   if command -v pipx &> /dev/null && pipx list 2>/dev/null | grep -qi "package hermes"; then
-    pipx inject hermes hermes-acp --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+    pipx inject hermes acp-hermes --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
   fi
   # Otherwise install with the same interpreter that runs hermes (shebang),
   # falling back to plain pip. PEP 668 boxes will refuse — that's the
@@ -123,18 +123,18 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
     HERMES_BIN="$(command -v hermes)"
     HERMES_PY="$(head -1 "$HERMES_BIN" 2>/dev/null | sed -n 's/^#!//p')"
     if [ -n "$HERMES_PY" ] && [ -x "$HERMES_PY" ]; then
-      "$HERMES_PY" -m pip install --upgrade hermes-acp >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+      "$HERMES_PY" -m pip install --upgrade acp-hermes >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
     fi
   fi
   if [ "$HERMES_PLUGIN_OK" = false ]; then
-    pip install --upgrade hermes-acp >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+    pip install --upgrade acp-hermes >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
   fi
   if [ "$HERMES_PLUGIN_OK" = true ] && hermes plugins enable acp >/dev/null 2>&1; then
     echo "  ${C_GREEN}✓ Hermes governed${C_RESET} — next: acp-hermes login   (headless box: set ACP_BEARER_TOKEN instead)"
   else
     echo "  Couldn't install automatically (often a PEP 668 managed environment)."
     echo "  Run it in your Python env of choice:"
-    echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
+    echo "    pip install acp-hermes && hermes plugins enable acp && acp-hermes login"
     echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
   fi
   echo ""
@@ -150,7 +150,7 @@ DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 if command -v dsh &> /dev/null || [ -d "$DSH_HOME_DIR/profiles" ]; then
   HAS_DSH=true
 fi
-# Cloud-only like Hermes: dsh-plugin-acp needs a workspace credential; local
+# Cloud-only like Hermes: @agenticcontrolplane/dsh needs a workspace credential; local
 # decisions aren't wired there yet.
 if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = true ]; then
   echo "  ${C_DIM}DeepSeek Harness detected — skipped in --local mode (its ACP plugin needs a workspace; local decisions aren't wired there yet).${C_RESET}"
@@ -166,7 +166,7 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
       _dsh_prof_name="$(basename "$_dsh_prof")"
       # The installation's shared node_modules dir is not a profile.
       [ "$_dsh_prof_name" = "node_modules" ] && continue
-      if dsh plugin --profile "$_dsh_prof_name" add dsh-plugin-acp >/dev/null 2>&1; then
+      if dsh plugin --profile "$_dsh_prof_name" add @agenticcontrolplane/dsh >/dev/null 2>&1; then
         DSH_PROFILES_INSTALLED=$((DSH_PROFILES_INSTALLED + 1))
       else
         DSH_PROFILES_FAILED=$((DSH_PROFILES_FAILED + 1))
@@ -180,7 +180,7 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
     # a Node 20 default breaks it). Print the manual path instead of guessing.
     echo "  Couldn't finish automatically (no profiles yet, or dsh isn't on PATH here — note dsh needs Node 22)."
     echo "  Run it against the profile you use:"
-    echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+    echo "    dsh plugin --profile <your-profile> add @agenticcontrolplane/dsh"
     echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
   fi
   echo ""
@@ -407,10 +407,10 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
   echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Prime Agent, Muse Code, Grok Build, Antigravity, Hermes Agent, DeepSeek Harness"
   echo "  Hermes Agent? It has a native pip plugin instead:"
-  echo "    pip install hermes-acp && hermes plugins enable acp && acp-hermes login"
+  echo "    pip install acp-hermes && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
   echo "  DeepSeek Harness? Same idea, its native plugin system:"
-  echo "    dsh plugin --profile <your-profile> add dsh-plugin-acp"
+  echo "    dsh plugin --profile <your-profile> add @agenticcontrolplane/dsh"
   echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
   echo "  pi (earendil-works)? A native extension file:"
   echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
