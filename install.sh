@@ -485,12 +485,12 @@ else
   GOVERN_SOURCE="bundled fallback"
   cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
 #!/usr/bin/env node
-import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } from "fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
 const ACP_API = process.env.ACP_API_BASE || "https://api.agenticcontrolplane.com";
-const PLUGIN_VERSION = "0.4.0";
+const PLUGIN_VERSION = "0.5.0";
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time: "claude-code-plugin",
 // "cursor", "codex", etc. Falls back to claude-code-plugin for backward compat.
@@ -691,6 +691,72 @@ async function handlePreToolUse() {
   process.exit(0);
 }
 
+// Cost from the hook, no proxy required. The harness transcript (Claude
+// Code's session JSONL, handed to us as transcript_path) records every
+// model turn's usage. Read only what arrived since the last report — a
+// per-transcript byte offset in ~/.acp/transcript-offsets.json — and ship
+// the turns as `model_usage` on the tool-output call we already make. The
+// gateway prices them at list rates and labels them API-rate equivalents.
+// Bounded: at most 2 MB read and 50 turns sent per call; any failure
+// returns nothing and never delays the hook.
+const TRANSCRIPT_OFFSETS = join(ACP_DIR, "transcript-offsets.json");
+const TRANSCRIPT_READ_CAP = 2 * 1024 * 1024;
+const TRANSCRIPT_MAX_TURNS = 50;
+function collectTranscriptUsage(path) {
+  if (typeof path !== "string" || !path || !existsSync(path)) return undefined;
+  let offsets = {};
+  try { offsets = JSON.parse(readFileSync(TRANSCRIPT_OFFSETS, "utf8")) || {}; } catch { offsets = {}; }
+  let size = 0;
+  try { size = statSync(path).size; } catch { return undefined; }
+  let start = typeof offsets[path] === "number" && offsets[path] <= size ? offsets[path] : 0;
+  if (size - start > TRANSCRIPT_READ_CAP) start = size - TRANSCRIPT_READ_CAP;
+  if (size <= start) return undefined;
+  let chunk = "";
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      readSync(fd, buf, 0, buf.length, start);
+      chunk = buf.toString("utf8");
+    } finally { closeSync(fd); }
+  } catch { return undefined; }
+  // Only consume complete lines; a partial trailing line waits for next time.
+  const lastNl = chunk.lastIndexOf("\n");
+  if (lastNl < 0) return undefined;
+  const consumed = Buffer.byteLength(chunk.slice(0, lastNl + 1), "utf8");
+  const turns = [];
+  for (const line of chunk.slice(0, lastNl).split("\n")) {
+    if (!line || line.indexOf('"usage"') < 0) continue;
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    const m = e && e.message;
+    const u = m && m.usage;
+    if (!u || typeof u !== "object" || (e.type !== "assistant" && m.role !== "assistant")) continue;
+    const id = (typeof m.id === "string" && m.id) || (typeof e.requestId === "string" && e.requestId) || (typeof e.uuid === "string" && e.uuid);
+    if (!id || typeof m.model !== "string") continue;
+    turns.push({
+      id, model: m.model,
+      input_tokens: u.input_tokens || 0,
+      cache_read_input_tokens: u.cache_read_input_tokens || 0,
+      cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+      output_tokens: u.output_tokens || 0,
+      ts: typeof e.timestamp === "string" ? e.timestamp : undefined,
+    });
+  }
+  // Advance the offset only past what we are sending; keep the file small.
+  try {
+    const keep = {};
+    let n = 0;
+    for (const [k, v] of Object.entries(offsets)) { if (k !== path && existsSync(k) && n++ < 40) keep[k] = v; }
+    keep[path] = start + consumed;
+    writeFileSync(TRANSCRIPT_OFFSETS, JSON.stringify(keep));
+  } catch {}
+  // Same-id turns can repeat across streamed chunks; keep the last (fullest).
+  const byId = new Map();
+  for (const t of turns) byId.set(t.id, t);
+  const out = Array.from(byId.values()).slice(-TRANSCRIPT_MAX_TURNS);
+  return out.length ? out : undefined;
+}
+
 async function handlePostToolUse() {
   let outputStr = "";
   try {
@@ -709,6 +775,7 @@ async function handlePostToolUse() {
     cwd: input.cwd,
     hook_event_name: "PostToolUse",
     agent_tier: resolveAgentTier(),
+    model_usage: collectTranscriptUsage(input.transcript_path),
   });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000);
