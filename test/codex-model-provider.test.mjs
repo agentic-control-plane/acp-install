@@ -137,8 +137,8 @@ test("codex-acp wrapper opts in via `-c model_provider=acp` (verified CLI flag: 
   assert.match(wrapper, /exec codex "\$@"/, "must fall back to plain codex when no ACP credentials exist");
   assert.match(
     wrapper,
-    /acp-session-summary" codex_cli/,
-    "codex-acp should pass a codex-specific clientName prefix to acp-session-summary, not the claude-c default",
+    /acp-session-summary" codex 2>/,
+    "codex-acp should pass the prefix \"codex\" (matches the TUI's \"codex\" and codex exec's \"codex_exec\"; \"codex_cli\" matched neither), not the claude-c default",
   );
 });
 
