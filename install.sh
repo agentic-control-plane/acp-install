@@ -57,7 +57,7 @@ for _a in "$@"; do case "$_a" in --local|--no-login) LOCAL_MODE=true ;; esac; do
 # tput-guarded: green success / red failure / dim secondary, mirroring
 # the console's ALLOW/DENY language. Degrades to plain text when stdout
 # is not a TTY or the terminal has no color support.
-if [ -t 1 ] && command -v tput &> /dev/null && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+if [ -t 1 ] && command -v tput > /dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_GREEN="$(tput setaf 2)"
   C_RED="$(tput setaf 1)"
   C_DIM="$(tput dim)"
@@ -78,19 +78,19 @@ HAS_OPENCLAW=false
 HAS_OPENCODE=false
 INSTALLED=""
 
-if [ -d "$HOME/.claude" ] || command -v claude &> /dev/null; then
+if [ -d "$HOME/.claude" ] || command -v claude > /dev/null 2>&1; then
   HAS_CLAUDE=true
 fi
 
-if [ -d "$HOME/.cursor" ] || command -v cursor &> /dev/null; then
+if [ -d "$HOME/.cursor" ] || command -v cursor > /dev/null 2>&1; then
   HAS_CURSOR=true
 fi
 
-if [ -d "$HOME/.codex" ] || command -v codex &> /dev/null; then
+if [ -d "$HOME/.codex" ] || command -v codex > /dev/null 2>&1; then
   HAS_CODEX=true
 fi
 
-if command -v openclaw &> /dev/null; then
+if command -v openclaw > /dev/null 2>&1; then
   HAS_OPENCLAW=true
 fi
 
@@ -99,7 +99,7 @@ fi
 # harness into the one-liner). Fail-open: any step failing degrades to
 # printing the manual commands, never a broken half-install.
 HAS_HERMES=false
-if command -v hermes &> /dev/null; then
+if command -v hermes > /dev/null 2>&1; then
   HAS_HERMES=true
 fi
 # Cloud-only: acp-hermes governs via a workspace token (without one it passes
@@ -113,7 +113,7 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   HERMES_PLUGIN_OK=false
   # If hermes lives in a pipx venv, the plugin must be injected there —
   # a bare pip install lands in the wrong environment.
-  if command -v pipx &> /dev/null && pipx list 2>/dev/null | grep -qi "package hermes"; then
+  if command -v pipx > /dev/null 2>&1 && pipx list 2>/dev/null | grep -qi "package hermes"; then
     pipx inject hermes acp-hermes --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
   fi
   # Otherwise install with the same interpreter that runs hermes (shebang),
@@ -147,7 +147,7 @@ fi
 # Fail-open: any refusal degrades to printing the manual command.
 HAS_DSH=false
 DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
-if command -v dsh &> /dev/null || [ -d "$DSH_HOME_DIR/profiles" ]; then
+if command -v dsh > /dev/null 2>&1 || [ -d "$DSH_HOME_DIR/profiles" ]; then
   HAS_DSH=true
 fi
 # Cloud-only like Hermes: @agenticcontrolplane/dsh needs a workspace credential; local
@@ -160,7 +160,7 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected DeepSeek Harness — installing the ACP plugin…"
   DSH_PROFILES_INSTALLED=0
   DSH_PROFILES_FAILED=0
-  if command -v dsh &> /dev/null && [ -d "$DSH_HOME_DIR/profiles" ]; then
+  if command -v dsh > /dev/null 2>&1 && [ -d "$DSH_HOME_DIR/profiles" ]; then
     for _dsh_prof in "$DSH_HOME_DIR"/profiles/*/; do
       [ -d "$_dsh_prof" ] || continue
       _dsh_prof_name="$(basename "$_dsh_prof")"
@@ -195,7 +195,7 @@ HAS_PI=false
 PI_EXT_DIR="$HOME/.pi/agent/extensions"
 # The ~/.pi/agent dir is the reliable signal; `command -v pi` alone can match
 # an unrelated binary named pi, so require the dir when falling back to PATH.
-if [ -d "$HOME/.pi/agent" ] || { command -v pi &> /dev/null && [ -d "$HOME/.pi" ]; }; then
+if [ -d "$HOME/.pi/agent" ] || { command -v pi > /dev/null 2>&1 && [ -d "$HOME/.pi" ]; }; then
   HAS_PI=true
 fi
 # Cloud-only like Hermes/dsh: the extension reads ~/.acp/credentials; local
@@ -234,7 +234,7 @@ HAS_PRIME=false
 PRIME_EXT_DIR="$HOME/.prime/agent/extensions"
 # The ~/.prime/agent dir is the reliable signal; `command -v prime-agent`
 # alone could match an unrelated binary, so require the dir on PATH fallback.
-if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent &> /dev/null && [ -d "$HOME/.prime" ]; }; then
+if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent > /dev/null 2>&1 && [ -d "$HOME/.prime" ]; }; then
   HAS_PRIME=true
 fi
 # Cloud-only like pi: the extension reads ~/.acp/credentials; local decisions
@@ -271,7 +271,7 @@ fi
 HAS_MUSE=false
 # The ~/.config/muse dir is the reliable signal; `command -v muse` alone could
 # match an unrelated binary, so require the config dir when falling back to PATH.
-if [ -d "$HOME/.config/muse" ] || { command -v muse &> /dev/null && [ -x "$HOME/.local/bin/muse" ]; }; then
+if [ -d "$HOME/.config/muse" ] || { command -v muse > /dev/null 2>&1 && [ -x "$HOME/.local/bin/muse" ]; }; then
   HAS_MUSE=true
 fi
 # Cloud-only like Hermes/dsh/pi: Muse clears the hook environment, so the
@@ -316,7 +316,7 @@ fi
 # so the Claude hook alone would fire and be ignored — this purpose-built hook
 # is the governed path. Fail-open: any refusal prints the manual commands.
 HAS_GROK=false
-if [ -d "$HOME/.grok" ] || command -v grok &> /dev/null; then
+if [ -d "$HOME/.grok" ] || command -v grok > /dev/null 2>&1; then
   HAS_GROK=true
 fi
 # Cloud-only like Hermes/dsh/pi/Muse: the hook reads ~/.acp/credentials.
@@ -350,7 +350,7 @@ fi
 # ~/.gemini/config/hooks.json. We MERGE under our own "acp" key via node (the
 # hook needs node anyway) — never overwrite: the file may hold user hooks.
 HAS_AGY=false
-if command -v agy &> /dev/null || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+if command -v agy > /dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
   HAS_AGY=true
 fi
 if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = true ]; then
@@ -361,7 +361,7 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected Google Antigravity — installing the ACP hook…"
   AGY_HOOK_OK=false
   _agy_raw="https://raw.githubusercontent.com/agentic-control-plane/antigravity-acp-plugin/main"
-  if command -v node &> /dev/null \
+  if command -v node > /dev/null 2>&1 \
     && mkdir -p "$HOME/.acp/hooks/antigravity" "$HOME/.gemini/config" 2>/dev/null \
     && curl -fsSL "$_agy_raw/hook.mjs" -o "$HOME/.acp/hooks/antigravity/hook.mjs" 2>/dev/null \
     && curl -fsSL "$_agy_raw/hooks/acp.json" -o "$HOME/.acp/hooks/antigravity/acp.json" 2>/dev/null \
@@ -383,7 +383,7 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
 fi
 
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
-if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
+if [ -d "$HOME/.config/opencode" ] || command -v opencode > /dev/null 2>&1; then
   HAS_OPENCODE=true
 fi
 
@@ -1758,7 +1758,10 @@ export ACP_KEY
 codex -c model_provider=acp "$@"
 STATUS=$?
 # End-of-session: what it cost + a link to the X-ray. Never blocks exit.
-"$HOME/.acp/bin/acp-session-summary" codex_cli 2>/dev/null || true
+# Prefix "codex" matches every Codex client the gateway records — the
+# interactive TUI reports "codex", `codex exec` reports "codex_exec"
+# (originator header, codex-cli 0.147.0); "codex_cli" matched neither.
+"$HOME/.acp/bin/acp-session-summary" codex 2>/dev/null || true
 exit $STATUS
 CODEXWRAPPER
   chmod +x "$CONFIG_DIR/bin/codex-acp"
@@ -1957,10 +1960,10 @@ if [ -n "$DEVICE_CODE" ]; then
   echo ""
   echo "      ${C_GREEN}$USER_CODE${C_RESET}"
   echo ""
-  if command -v open &> /dev/null; then
+  if command -v open > /dev/null 2>&1; then
     open "$VERIFY_URL" 2>/dev/null || true
     echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
-  elif command -v xdg-open &> /dev/null; then
+  elif command -v xdg-open > /dev/null 2>&1; then
     xdg-open "$VERIFY_URL" 2>/dev/null || true
     echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
   else
@@ -2007,9 +2010,9 @@ else
   # Never brick: if /device/code is unreachable, fall back to the browser
   # page and the manual one-liner rather than leaving the user with nothing.
   AUTH_URL="$DASHBOARD_BASE/plugin/authorize?setup=cli"
-  if command -v open &> /dev/null; then
+  if command -v open > /dev/null 2>&1; then
     open "$AUTH_URL" 2>/dev/null || true
-  elif command -v xdg-open &> /dev/null; then
+  elif command -v xdg-open > /dev/null 2>&1; then
     xdg-open "$AUTH_URL" 2>/dev/null || true
   fi
   echo "  ${C_DIM}Automatic setup unavailable — finish in the browser:${C_RESET}"
