@@ -45,7 +45,9 @@ For whichever AI clients it detects:
    - Writes an ACP section in `~/.codex/AGENTS.md` instructing Codex to call `acp_check` before non-Bash tool invocations
 4. **Pairs this machine via device code** (RFC 8628): you approve a short code in a browser you're already signed into, and the script itself writes the key — nothing is pasted. If the device-code endpoint is unreachable, it falls back to the browser page + a manual one-liner.
 5. **Saves the key to `~/.acp/credentials`** (mode 0600). If the install ends with no usable key, it says so loudly and exits with code 2 — hooks without a key are a silent no-op, and the script refuses to call that success.
-6. **Installs the `claude-acp` cost-X-ray wrapper** (`~/.acp/bin`) and adds one marked PATH line (`# acp-installer`) to your shell rc
+6. **Installs the cost-X-ray wrapper(s)** (`~/.acp/bin`) for whichever clients are detected, and adds one marked PATH line (`# acp-installer`) to your shell rc:
+   - Claude Code: `claude-acp` — routes model calls through the ACP proxy via `ANTHROPIC_BASE_URL` + a custom header; plain `claude` is untouched
+   - Codex: `codex-acp` — adds a `[model_providers.acp]` block to `~/.codex/config.toml` (never changes the file's default `model_provider`) and launches with `codex -c model_provider=acp`; plain `codex` is untouched
 
 In **`--local` mode**, steps 4–6 and every other piece of cloud wiring are skipped entirely: no OAuth, no MCP server, no cost wrapper, no shell-rc edits. Hooks + the on-device engine only. (Codex note: its hooks cover shell commands today; non-Bash Codex tools aren't hookable yet — in cloud mode the MCP connector covers them.)
 
@@ -81,7 +83,7 @@ rm -rf ~/.acp
 # - ~/.claude/settings.json        remove the "govern.mjs" entries under hooks.PreToolUse[] and hooks.PostToolUse[]
 # - ~/.cursor/hooks.json           remove the "govern.mjs" entries under hooks.preToolUse[] and hooks.postToolUse[]
 # - ~/.codex/hooks.json            remove the "govern.mjs" entries under hooks.PreToolUse[] and hooks.PostToolUse[]
-# - ~/.codex/config.toml           remove the [mcp_servers.acp] block and the [features] hooks line (hooks = true, or codex_hooks = true on older builds)
+# - ~/.codex/config.toml           remove the [mcp_servers.acp] block, the [model_providers.acp] block, and the [features] hooks line (hooks = true, or codex_hooks = true on older builds)
 # - ~/.codex/AGENTS.md             remove the block between <!-- acp:begin --> and <!-- acp:end --> markers
 # - ~/.zshrc / ~/.bashrc           remove the PATH line marked "# acp-installer" (cloud mode only)
 ```
