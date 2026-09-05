@@ -57,7 +57,7 @@ for _a in "$@"; do case "$_a" in --local|--no-login) LOCAL_MODE=true ;; esac; do
 # tput-guarded: green success / red failure / dim secondary, mirroring
 # the console's ALLOW/DENY language. Degrades to plain text when stdout
 # is not a TTY or the terminal has no color support.
-if [ -t 1 ] && command -v tput &> /dev/null && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+if [ -t 1 ] && command -v tput > /dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_GREEN="$(tput setaf 2)"
   C_RED="$(tput setaf 1)"
   C_DIM="$(tput dim)"
@@ -78,19 +78,19 @@ HAS_OPENCLAW=false
 HAS_OPENCODE=false
 INSTALLED=""
 
-if [ -d "$HOME/.claude" ] || command -v claude &> /dev/null; then
+if [ -d "$HOME/.claude" ] || command -v claude > /dev/null 2>&1; then
   HAS_CLAUDE=true
 fi
 
-if [ -d "$HOME/.cursor" ] || command -v cursor &> /dev/null; then
+if [ -d "$HOME/.cursor" ] || command -v cursor > /dev/null 2>&1; then
   HAS_CURSOR=true
 fi
 
-if [ -d "$HOME/.codex" ] || command -v codex &> /dev/null; then
+if [ -d "$HOME/.codex" ] || command -v codex > /dev/null 2>&1; then
   HAS_CODEX=true
 fi
 
-if command -v openclaw &> /dev/null; then
+if command -v openclaw > /dev/null 2>&1; then
   HAS_OPENCLAW=true
 fi
 
@@ -99,7 +99,7 @@ fi
 # harness into the one-liner). Fail-open: any step failing degrades to
 # printing the manual commands, never a broken half-install.
 HAS_HERMES=false
-if command -v hermes &> /dev/null; then
+if command -v hermes > /dev/null 2>&1; then
   HAS_HERMES=true
 fi
 # Cloud-only: acp-hermes governs via a workspace token (without one it passes
@@ -113,7 +113,7 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   HERMES_PLUGIN_OK=false
   # If hermes lives in a pipx venv, the plugin must be injected there —
   # a bare pip install lands in the wrong environment.
-  if command -v pipx &> /dev/null && pipx list 2>/dev/null | grep -qi "package hermes"; then
+  if command -v pipx > /dev/null 2>&1 && pipx list 2>/dev/null | grep -qi "package hermes"; then
     pipx inject hermes acp-hermes --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
   fi
   # Otherwise install with the same interpreter that runs hermes (shebang),
@@ -147,7 +147,7 @@ fi
 # Fail-open: any refusal degrades to printing the manual command.
 HAS_DSH=false
 DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
-if command -v dsh &> /dev/null || [ -d "$DSH_HOME_DIR/profiles" ]; then
+if command -v dsh > /dev/null 2>&1 || [ -d "$DSH_HOME_DIR/profiles" ]; then
   HAS_DSH=true
 fi
 # Cloud-only like Hermes: @agenticcontrolplane/dsh needs a workspace credential; local
@@ -160,7 +160,7 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected DeepSeek Harness — installing the ACP plugin…"
   DSH_PROFILES_INSTALLED=0
   DSH_PROFILES_FAILED=0
-  if command -v dsh &> /dev/null && [ -d "$DSH_HOME_DIR/profiles" ]; then
+  if command -v dsh > /dev/null 2>&1 && [ -d "$DSH_HOME_DIR/profiles" ]; then
     for _dsh_prof in "$DSH_HOME_DIR"/profiles/*/; do
       [ -d "$_dsh_prof" ] || continue
       _dsh_prof_name="$(basename "$_dsh_prof")"
@@ -195,7 +195,7 @@ HAS_PI=false
 PI_EXT_DIR="$HOME/.pi/agent/extensions"
 # The ~/.pi/agent dir is the reliable signal; `command -v pi` alone can match
 # an unrelated binary named pi, so require the dir when falling back to PATH.
-if [ -d "$HOME/.pi/agent" ] || { command -v pi &> /dev/null && [ -d "$HOME/.pi" ]; }; then
+if [ -d "$HOME/.pi/agent" ] || { command -v pi > /dev/null 2>&1 && [ -d "$HOME/.pi" ]; }; then
   HAS_PI=true
 fi
 # Cloud-only like Hermes/dsh: the extension reads ~/.acp/credentials; local
@@ -234,7 +234,7 @@ HAS_PRIME=false
 PRIME_EXT_DIR="$HOME/.prime/agent/extensions"
 # The ~/.prime/agent dir is the reliable signal; `command -v prime-agent`
 # alone could match an unrelated binary, so require the dir on PATH fallback.
-if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent &> /dev/null && [ -d "$HOME/.prime" ]; }; then
+if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent > /dev/null 2>&1 && [ -d "$HOME/.prime" ]; }; then
   HAS_PRIME=true
 fi
 # Cloud-only like pi: the extension reads ~/.acp/credentials; local decisions
@@ -271,7 +271,7 @@ fi
 HAS_MUSE=false
 # The ~/.config/muse dir is the reliable signal; `command -v muse` alone could
 # match an unrelated binary, so require the config dir when falling back to PATH.
-if [ -d "$HOME/.config/muse" ] || { command -v muse &> /dev/null && [ -x "$HOME/.local/bin/muse" ]; }; then
+if [ -d "$HOME/.config/muse" ] || { command -v muse > /dev/null 2>&1 && [ -x "$HOME/.local/bin/muse" ]; }; then
   HAS_MUSE=true
 fi
 # Cloud-only like Hermes/dsh/pi: Muse clears the hook environment, so the
@@ -316,7 +316,7 @@ fi
 # so the Claude hook alone would fire and be ignored — this purpose-built hook
 # is the governed path. Fail-open: any refusal prints the manual commands.
 HAS_GROK=false
-if [ -d "$HOME/.grok" ] || command -v grok &> /dev/null; then
+if [ -d "$HOME/.grok" ] || command -v grok > /dev/null 2>&1; then
   HAS_GROK=true
 fi
 # Cloud-only like Hermes/dsh/pi/Muse: the hook reads ~/.acp/credentials.
@@ -350,7 +350,7 @@ fi
 # ~/.gemini/config/hooks.json. We MERGE under our own "acp" key via node (the
 # hook needs node anyway) — never overwrite: the file may hold user hooks.
 HAS_AGY=false
-if command -v agy &> /dev/null || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+if command -v agy > /dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
   HAS_AGY=true
 fi
 if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = true ]; then
@@ -361,7 +361,7 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected Google Antigravity — installing the ACP hook…"
   AGY_HOOK_OK=false
   _agy_raw="https://raw.githubusercontent.com/agentic-control-plane/antigravity-acp-plugin/main"
-  if command -v node &> /dev/null \
+  if command -v node > /dev/null 2>&1 \
     && mkdir -p "$HOME/.acp/hooks/antigravity" "$HOME/.gemini/config" 2>/dev/null \
     && curl -fsSL "$_agy_raw/hook.mjs" -o "$HOME/.acp/hooks/antigravity/hook.mjs" 2>/dev/null \
     && curl -fsSL "$_agy_raw/hooks/acp.json" -o "$HOME/.acp/hooks/antigravity/acp.json" 2>/dev/null \
@@ -383,14 +383,14 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
 fi
 
 # opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
-if [ -d "$HOME/.config/opencode" ] || command -v opencode &> /dev/null; then
+if [ -d "$HOME/.config/opencode" ] || command -v opencode > /dev/null 2>&1; then
   HAS_OPENCODE=true
 fi
 # Qwen Code (QwenLM/qwen-code, Gemini CLI lineage) — hooks are Claude Code's contract
 # (PreToolUse/PostToolUse, hookSpecificOutput.permissionDecision, exit 2 = block) read
 # from ~/.qwen/settings.json; timeouts are milliseconds; matcher "*" = every tool.
 HAS_QWEN=false
-if [ -d "$HOME/.qwen" ] || command -v qwen &> /dev/null; then
+if [ -d "$HOME/.qwen" ] || command -v qwen > /dev/null 2>&1; then
   HAS_QWEN=true
 fi
 
@@ -1224,6 +1224,64 @@ export function decide(toolName, toolInput, policy) {
 DECIDE
 chmod +x "$CONFIG_DIR/decide.mjs"
 
+# ── Shared: write acp-session-summary (cloud mode only) ────────────────
+# End-of-session line printed by the priced launchers (`claude-acp`,
+# `codex-acp`): what the session cost + a deep link to its X-ray. Shared
+# across clients so there's one source of truth for the runs-API call and
+# the formatting; each launcher passes its own clientName prefix so the
+# summary picks out ITS session, not another client's, from the same
+# 6-hour window. Written here (before any per-client Step 1x block) so it
+# exists regardless of which client ends up wiring a wrapper.
+if [ "$LOCAL_MODE" = false ]; then
+  mkdir -p "$CONFIG_DIR/bin"
+  cat > "$CONFIG_DIR/bin/acp-session-summary" << 'SUMMARY'
+#!/bin/sh
+# ACP end-of-session summary — what the session cost + a deep link to its
+# X-ray. Called by claude-acp / codex-acp on exit; silent on any failure.
+# $1: clientName prefix to match this launcher's runs (defaults to
+# claude-c for callers that don't pass one, i.e. claude-acp).
+ACP_KEY="$(cat "$HOME/.acp/credentials" 2>/dev/null)"
+[ -z "$ACP_KEY" ] && exit 0
+export ACP_KEY
+node -e '
+const key = process.env.ACP_KEY;
+const prefix = process.argv[1] || "claude-c";
+fetch("https://api.agenticcontrolplane.com/api/v1/runs?window=6h", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(2500) })
+  .then((r) => r.json())
+  .then(({ runs }) => {
+    const mine = (runs ?? []).filter((r) => (r.clientName ?? "").startsWith(prefix)).sort((a, b) => b.endMs - a.endMs)[0];
+    if (!mine) return;
+    const cost = mine.costCents >= 100 ? `$${(mine.costCents / 100).toFixed(2)}` : `${Math.round(mine.costCents * 10) / 10}¢`;
+    const at = mine.byoAuth ? " @ API rates" : "";
+    const parts = [`${mine.modelCalls} model call${mine.modelCalls === 1 ? "" : "s"}`, `${mine.toolCalls} tool call${mine.toolCalls === 1 ? "" : "s"}`];
+    if (mine.costCents > 0) parts.push(`${cost}${at}`);
+    if (mine.denies > 0) parts.push(`${mine.denies} denied`);
+    console.log(`\n  ACP · session governed: ${parts.join(" · ")}`);
+    console.log(`  → https://cloud.agenticcontrolplane.com/sessions/${encodeURIComponent(mine.runKey)}\n`);
+  })
+  .catch(() => {});
+' "${1:-claude-c}" 2>/dev/null
+exit 0
+SUMMARY
+  chmod +x "$CONFIG_DIR/bin/acp-session-summary"
+
+  # Put ~/.acp/bin on PATH (idempotent; marked line so upgrades don't stack).
+  # Shared because either priced launcher (claude-acp, codex-acp) needs it —
+  # written here once so a Codex-only machine gets it too, not just Claude.
+  PATH_LINE='export PATH="$HOME/.acp/bin:$PATH" # acp-installer'
+  ADDED_PATH=false
+  for RC in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    if [ -f "$RC" ] && ! grep -q '\.acp/bin' "$RC" 2>/dev/null; then
+      printf '\n%s\n' "$PATH_LINE" >> "$RC"
+      ADDED_PATH=true
+    fi
+  done
+  if [ ! -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.bashrc" ] && ! grep -q '\.acp/bin' "$HOME/.profile" 2>/dev/null; then
+    printf '\n%s\n' "$PATH_LINE" >> "$HOME/.profile"
+    ADDED_PATH=true
+  fi
+fi
+
 # ── Step 1a: Claude Code setup ────────────────────────────────────────
 
 if [ "$HAS_CLAUDE" = true ]; then
@@ -1426,34 +1484,6 @@ if [ "$HAS_CLAUDE" = true ]; then
   # this (no wrapper, no PATH edit — local mode touches no shell rc files).
   if [ "$LOCAL_MODE" = false ]; then
   mkdir -p "$CONFIG_DIR/bin"
-  cat > "$CONFIG_DIR/bin/acp-session-summary" << 'SUMMARY'
-#!/bin/sh
-# ACP end-of-session summary — what the session cost + a deep link to its
-# X-ray. Called by claude-acp on exit; silent on any failure.
-ACP_KEY="$(cat "$HOME/.acp/credentials" 2>/dev/null)"
-[ -z "$ACP_KEY" ] && exit 0
-export ACP_KEY
-node -e '
-const key = process.env.ACP_KEY;
-fetch("https://api.agenticcontrolplane.com/api/v1/runs?window=6h", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(2500) })
-  .then((r) => r.json())
-  .then(({ runs }) => {
-    const mine = (runs ?? []).filter((r) => (r.clientName ?? "").startsWith("claude-c")).sort((a, b) => b.endMs - a.endMs)[0];
-    if (!mine) return;
-    const cost = mine.costCents >= 100 ? `$${(mine.costCents / 100).toFixed(2)}` : `${Math.round(mine.costCents * 10) / 10}¢`;
-    const at = mine.byoAuth ? " @ API rates" : "";
-    const parts = [`${mine.modelCalls} model call${mine.modelCalls === 1 ? "" : "s"}`, `${mine.toolCalls} tool call${mine.toolCalls === 1 ? "" : "s"}`];
-    if (mine.costCents > 0) parts.push(`${cost}${at}`);
-    if (mine.denies > 0) parts.push(`${mine.denies} denied`);
-    console.log(`\n  ACP · session governed: ${parts.join(" · ")}`);
-    console.log(`  → https://cloud.agenticcontrolplane.com/sessions/${encodeURIComponent(mine.runKey)}\n`);
-  })
-  .catch(() => {});
-' 2>/dev/null
-exit 0
-SUMMARY
-  chmod +x "$CONFIG_DIR/bin/acp-session-summary"
-
   cat > "$CONFIG_DIR/bin/claude-acp" << 'WRAPPER'
 #!/bin/sh
 # claude-acp — Claude Code with the ACP cost X-ray.
@@ -1474,22 +1504,8 @@ STATUS=$?
 exit $STATUS
 WRAPPER
   chmod +x "$CONFIG_DIR/bin/claude-acp"
-
-  # Put ~/.acp/bin on PATH (idempotent; marked line so upgrades don't stack)
-  PATH_LINE='export PATH="$HOME/.acp/bin:$PATH" # acp-installer'
-  ADDED_PATH=false
-  for RC in "$HOME/.zshrc" "$HOME/.bashrc"; do
-    if [ -f "$RC" ] && ! grep -q '\.acp/bin' "$RC" 2>/dev/null; then
-      printf '\n%s\n' "$PATH_LINE" >> "$RC"
-      ADDED_PATH=true
-    fi
-  done
-  if [ ! -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.bashrc" ] && ! grep -q '\.acp/bin' "$HOME/.profile" 2>/dev/null; then
-    printf '\n%s\n' "$PATH_LINE" >> "$HOME/.profile"
-    ADDED_PATH=true
-  fi
   echo "  ${C_GREEN}✓${C_RESET} [Claude Code] Cost X-ray wrapper installed: claude-acp"
-  [ "$ADDED_PATH" = true ] && echo "  ${C_DIM}[Claude Code] Added ~/.acp/bin to PATH (open a new terminal to pick it up)${C_RESET}"
+  [ "$ADDED_PATH" = true ] && echo "  ${C_DIM}Added ~/.acp/bin to PATH (open a new terminal to pick it up)${C_RESET}"
   fi # LOCAL_MODE=false (cost X-ray wrapper)
 
   INSTALLED="${INSTALLED:+$INSTALLED, }Claude Code"
@@ -1660,6 +1676,32 @@ args = ["-c", 'exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --
 MCPBLOCK
   fi
 
+  # Add [model_providers.acp] block if not present — the cost X-ray for
+  # Codex's MODEL calls (the MCP connector above governs TOOL calls and
+  # never sees token usage; this is the other plane, same split as
+  # /blog/codex-cli-cost-tracking documents). Written but not selected:
+  # this does NOT set `model_provider = "acp"` as the file's default, so
+  # plain `codex` is completely unaffected. `codex-acp` (below) opts a
+  # single invocation in via `-c model_provider=acp`, symmetric with how
+  # `claude-acp` opts in via env vars instead of touching Claude Code's
+  # own config. `env_http_headers` reads the ACP_KEY env var at Codex
+  # launch — codex-acp sets it — so no key is ever written to config.toml.
+  # Exact block per agenticcontrolplane.com/blog/codex-cli-cost-tracking
+  # (hero copy) and /integrations/codex (both agree on it).
+  # Cloud-only: same reasoning as the MCP connector above — it's a hosted
+  # proxy, so --local skips it.
+  if [ "$LOCAL_MODE" = false ] && ! grep -q "^\[model_providers\.acp\]" "$CODEX_TOML"; then
+    cat >> "$CODEX_TOML" << 'PROVIDERBLOCK'
+
+[model_providers.acp]
+name = "Agentic Control Plane"
+base_url = "https://api.agenticcontrolplane.com/openai/v1"
+requires_openai_auth = true
+wire_api = "responses"
+env_http_headers = { "x-acp-key" = "ACP_KEY" }
+PROVIDERBLOCK
+  fi
+
   # Register Pre- and Post-ToolUse hooks in ~/.codex/hooks.json.
   #
   # ACP_HARNESS=codex is load-bearing, not decoration. govern.mjs branches on
@@ -1741,6 +1783,42 @@ MCPBLOCK
   " "$CODEX_AGENTS"
   echo "  [Codex] AGENTS.md directive installed — Codex will call acp_check before non-Bash tools"
   echo "  ${C_GREEN}✓${C_RESET} [Codex] hooks feature enabled + PreToolUse/PostToolUse hooks + MCP connector wired"
+
+  # ── Cost X-ray wrapper (pricing out of the box) ─────────────────────
+  # Same split as Claude Code: hooks + MCP connector govern what Codex
+  # DOES; they never see the model call, so they can't price it. The
+  # [model_providers.acp] block above makes pricing possible but does not
+  # turn it on for plain `codex` — `codex-acp` is the opt-in launcher,
+  # symmetric with `claude-acp`. BYO auth: `requires_openai_auth = true`
+  # means ACP forwards YOUR ChatGPT/API-key login, never its own; OpenAI
+  # bills you exactly as before, ACP only observes and governs.
+  mkdir -p "$CONFIG_DIR/bin"
+  cat > "$CONFIG_DIR/bin/codex-acp" << 'CODEXWRAPPER'
+#!/bin/sh
+# codex-acp — Codex CLI with the ACP cost X-ray.
+# Model calls route through the ACP proxy (priced + governed); OpenAI
+# bills your own ChatGPT subscription/API key (ACP forwards your
+# credential, never its own). This selects the `acp` model_provider for
+# THIS invocation only (-c model_provider=acp) — plain `codex` keeps
+# whatever default is in config.toml, untouched. Docs: agenticcontrolplane.com
+ACP_KEY="$(cat "$HOME/.acp/credentials" 2>/dev/null)"
+if [ -z "$ACP_KEY" ]; then
+  echo "codex-acp: no ACP credentials (~/.acp/credentials) — re-run the installer without --local. Starting plain codex." >&2
+  exec codex "$@"
+fi
+export ACP_KEY
+codex -c model_provider=acp "$@"
+STATUS=$?
+# End-of-session: what it cost + a link to the X-ray. Never blocks exit.
+# Prefix "codex" matches every Codex client the gateway records — the
+# interactive TUI reports "codex", `codex exec` reports "codex_exec"
+# (originator header, codex-cli 0.147.0); "codex_cli" matched neither.
+"$HOME/.acp/bin/acp-session-summary" codex 2>/dev/null || true
+exit $STATUS
+CODEXWRAPPER
+  chmod +x "$CONFIG_DIR/bin/codex-acp"
+  echo "  ${C_GREEN}✓${C_RESET} [Codex] Cost X-ray wrapper installed: codex-acp"
+  [ "$ADDED_PATH" = true ] && echo "  ${C_DIM}Added ~/.acp/bin to PATH (open a new terminal to pick it up)${C_RESET}"
   else
   echo "  ${C_GREEN}✓${C_RESET} [Codex] hooks feature enabled + PreToolUse/PostToolUse hooks (local: shell commands governed on-device)"
   fi # LOCAL_MODE (Codex cloud wiring)
@@ -1934,10 +2012,10 @@ if [ -n "$DEVICE_CODE" ]; then
   echo ""
   echo "      ${C_GREEN}$USER_CODE${C_RESET}"
   echo ""
-  if command -v open &> /dev/null; then
+  if command -v open > /dev/null 2>&1; then
     open "$VERIFY_URL" 2>/dev/null || true
     echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
-  elif command -v xdg-open &> /dev/null; then
+  elif command -v xdg-open > /dev/null 2>&1; then
     xdg-open "$VERIFY_URL" 2>/dev/null || true
     echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
   else
@@ -1984,9 +2062,9 @@ else
   # Never brick: if /device/code is unreachable, fall back to the browser
   # page and the manual one-liner rather than leaving the user with nothing.
   AUTH_URL="$DASHBOARD_BASE/plugin/authorize?setup=cli"
-  if command -v open &> /dev/null; then
+  if command -v open > /dev/null 2>&1; then
     open "$AUTH_URL" 2>/dev/null || true
-  elif command -v xdg-open &> /dev/null; then
+  elif command -v xdg-open > /dev/null 2>&1; then
     xdg-open "$AUTH_URL" 2>/dev/null || true
   fi
   echo "  ${C_DIM}Automatic setup unavailable — finish in the browser:${C_RESET}"
@@ -2087,6 +2165,11 @@ if [ "$HAS_CURSOR" = true ]; then
 fi
 if [ "$HAS_CODEX" = true ]; then
   echo "  Then restart Codex (Ctrl+C, then codex) to activate the hook"
+  echo ""
+  echo "  Codex — two ways to run:"
+  echo "    codex        tool calls governed + audited (hooks)"
+  echo "    codex-acp    the above PLUS every model call priced —"
+  echo "                 the cost X-ray, billed to your own account"
 fi
 if [ "$HAS_OPENCLAW" = true ]; then
   echo "  Then restart OpenClaw to activate the plugin"
