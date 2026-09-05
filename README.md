@@ -26,7 +26,7 @@ One command. It detects whichever agents you run and puts the same guardrails in
 
 The same policy that stops Claude Code stops Codex. You configure control once, not once per vendor. The default install connects a workspace — free for individuals — with the cost X-ray and a shared console across everyone's agents. `--local` is the fully-private on-device mode; re-run without the flag any time to connect.
 
-Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
+Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, Qwen Code.
 
 Want the long version first? [Every file the installer writes, in plain language](https://agenticcontrolplane.com/install-explained) · [getting started](https://agenticcontrolplane.com/getting-started) · per-client guides for [Claude Code](https://agenticcontrolplane.com/integrations/claude-code) and [Codex CLI](https://agenticcontrolplane.com/integrations/codex)
 
@@ -38,6 +38,7 @@ For whichever AI clients it detects:
 2. **Registers PreToolUse + PostToolUse hooks** in the client's config:
    - Claude Code: `~/.claude/settings.json`
    - Cursor: `~/.cursor/hooks.json`
+   - Qwen Code: `~/.qwen/settings.json` (`hooks` + `mcpServers`)
    - Codex: `~/.codex/hooks.json`
 3. **For Codex only** — wires three layers:
    - Enables the hooks feature in `~/.codex/config.toml` (`[features].hooks = true` on Codex 0.145.0+, the deprecated `codex_hooks` alias on older builds)
