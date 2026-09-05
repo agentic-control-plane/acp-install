@@ -386,8 +386,15 @@ fi
 if [ -d "$HOME/.config/opencode" ] || command -v opencode > /dev/null 2>&1; then
   HAS_OPENCODE=true
 fi
+# Qwen Code (QwenLM/qwen-code, Gemini CLI lineage) — hooks are Claude Code's contract
+# (PreToolUse/PostToolUse, hookSpecificOutput.permissionDecision, exit 2 = block) read
+# from ~/.qwen/settings.json; timeouts are milliseconds; matcher "*" = every tool.
+HAS_QWEN=false
+if [ -d "$HOME/.qwen" ] || command -v qwen > /dev/null 2>&1; then
+  HAS_QWEN=true
+fi
 
-if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ]; then
+if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ] && [ "$HAS_QWEN" = false ]; then
   # Hermes-only / dsh-only / pi-only box: the plugin paths above already
   # handled them — success, not "nothing detected".
   if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ] || [ "$HAS_MUSE" = true ] || [ "$HAS_GROK" = true ]; then
@@ -437,6 +444,9 @@ fi
 if [ "$HAS_OPENCODE" = true ]; then
   if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + opencode"; else TARGETS="opencode"; fi
 fi
+if [ "$HAS_QWEN" = true ]; then
+  if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + Qwen Code"; else TARGETS="Qwen Code"; fi
+fi
 
 # Machine-readable form of the same detection, sent with the device-code
 # request so the minted key records WHICH harness it was wired for. The
@@ -451,6 +461,7 @@ _add_slug() { if [ -n "$CLIENT_SLUG" ]; then CLIENT_SLUG="$CLIENT_SLUG+$1"; else
 [ "$HAS_CODEX" = true ] && _add_slug "codex"
 [ "$HAS_OPENCLAW" = true ] && _add_slug "openclaw"
 [ "$HAS_OPENCODE" = true ] && _add_slug "opencode"
+[ "$HAS_QWEN" = true ] && _add_slug "qwen-code"
 [ -n "$CLIENT_SLUG" ] || CLIENT_SLUG="cli"
 
 echo ""
@@ -1484,8 +1495,15 @@ if [ -z "$ACP_KEY" ]; then
   echo "claude-acp: no ACP credentials (~/.acp/credentials) — run /acp-connect. Starting plain claude." >&2
   exec claude "$@"
 fi
+# Opt-in trace capture for THIS launch: ACP_TRACE_LEVEL=full asks the gateway
+# to keep a redacted, size-capped, auto-expiring record of each model call's
+# request and response (x-trace-level header; see agenticcontrolplane.com
+# /docs/trace). Off unless you set it. Headers are newline-separated.
+ACP_HDRS="x-acp-key: $ACP_KEY"
+if [ -n "$ACP_TRACE_LEVEL" ]; then ACP_HDRS="$ACP_HDRS
+x-trace-level: $ACP_TRACE_LEVEL"; fi
 ANTHROPIC_BASE_URL="${ACP_PROXY_BASE:-https://api.agenticcontrolplane.com/anthropic}" \
-ANTHROPIC_CUSTOM_HEADERS="x-acp-key: $ACP_KEY" \
+ANTHROPIC_CUSTOM_HEADERS="$ACP_HDRS" \
 claude "$@"
 STATUS=$?
 # End-of-session: what it cost + a link to the X-ray. Never blocks exit.
@@ -1501,6 +1519,47 @@ WRAPPER
 fi
 
 # ── Step 1b: Cursor setup ────────────────────────────────────────────
+
+if [ "$HAS_QWEN" = true ]; then
+  echo "  [Qwen Code] Setting up governance hooks..."
+
+  QWEN_SETTINGS="$HOME/.qwen/settings.json"
+  mkdir -p "$HOME/.qwen"
+  if [ ! -f "$QWEN_SETTINGS" ]; then
+    echo '{}' > "$QWEN_SETTINGS"
+  fi
+  node -e "
+    const fs = require('fs');
+    const p = process.argv[1];
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+    cfg.hooks = cfg.hooks || {};
+    // Qwen Code: matcher '*' = every tool; timeout is milliseconds.
+    const hookEntry = {
+      matcher: '*',
+      hooks: [{ type: 'command', name: 'acp', command: 'env ACP_CLIENT=qwen-code node \$HOME/.acp/govern.mjs', timeout: 5000 }]
+    };
+    function isGovernEntry(e) {
+      return Array.isArray(e.hooks) && e.hooks.some(h => typeof h.command === 'string' && h.command.includes('govern.mjs'));
+    }
+    // Upgrade-safe: remove any existing govern.mjs entry, then add the current one.
+    for (const ev of ['PreToolUse', 'PostToolUse']) {
+      cfg.hooks[ev] = (Array.isArray(cfg.hooks[ev]) ? cfg.hooks[ev] : []).filter(e => !isGovernEntry(e));
+      cfg.hooks[ev].push(hookEntry);
+    }
+    // ACP introspection MCP — Qwen Code reads mcpServers from the same file.
+    cfg.mcpServers = cfg.mcpServers || {};
+    cfg.mcpServers.acp = {
+      command: 'sh',
+      args: ['-c', 'exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header \"Authorization: Bearer \$(cat ~/.acp/credentials)\"'],
+    };
+    if (cfg.disableAllHooks === true) console.error('  [Qwen Code] warning: disableAllHooks is true in settings.json — hooks (including ACP) will not run until it is removed.');
+    fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
+  " "$QWEN_SETTINGS"
+  echo "  ${C_GREEN}✓${C_RESET} [Qwen Code] PreToolUse + PostToolUse hooks + MCP connector registered in ~/.qwen/settings.json"
+  INSTALLED="${INSTALLED:+$INSTALLED, }Qwen Code"
+  echo ""
+fi
 
 if [ "$HAS_CURSOR" = true ]; then
   echo "  [Cursor] Setting up governance hooks..."
@@ -1755,7 +1814,16 @@ if [ -z "$ACP_KEY" ]; then
   exec codex "$@"
 fi
 export ACP_KEY
-codex -c model_provider=acp "$@"
+# Opt-in trace capture for THIS launch (ACP_TRACE_LEVEL=full): add the
+# x-trace-level header to the provider for this invocation only. Codex reads
+# env_http_headers values from the environment, so the level never lands in
+# config.toml. Off unless you set it.
+if [ -n "$ACP_TRACE_LEVEL" ]; then
+  export ACP_TRACE_LEVEL
+  codex -c model_provider=acp -c 'model_providers.acp.env_http_headers={ "x-acp-key" = "ACP_KEY", "x-trace-level" = "ACP_TRACE_LEVEL" }' "$@"
+else
+  codex -c model_provider=acp "$@"
+fi
 STATUS=$?
 # End-of-session: what it cost + a link to the X-ray. Never blocks exit.
 # Prefix "codex" matches every Codex client the gateway records — the
@@ -2121,6 +2189,9 @@ if [ "$HAS_CODEX" = true ]; then
 fi
 if [ "$HAS_OPENCLAW" = true ]; then
   echo "  Then restart OpenClaw to activate the plugin"
+fi
+if [ "$HAS_QWEN" = true ]; then
+  echo "  Then restart Qwen Code (Ctrl+C, then qwen) to activate the hook — headless runs (qwen --prompt) resolve any ask to deny"
 fi
 echo ""
 if [ "${ACP_UNGOVERNED:-false}" != true ]; then
