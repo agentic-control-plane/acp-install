@@ -1257,6 +1257,26 @@ fetch("https://api.agenticcontrolplane.com/api/v1/runs?window=6h", { headers: { 
     if (mine.costCents > 0) parts.push(`${cost}${at}`);
     if (mine.denies > 0) parts.push(`${mine.denies} denied`);
     console.log(`\n  ACP · session governed: ${parts.join(" · ")}`);
+    // One advice line at the boundary — bias to silence. Fires only when
+    // side-model calls (permission classifiers, titles, subagents on a model
+    // other than this runs main loop) were a real share of model spend. Never
+    // mid-stream, never a nag, never the backfire "refresh" tip.
+    try {
+      const st = (mine.steps || []).filter((s) => s.model);
+      if (st.length >= 5) {
+        const by = {};
+        for (const s of st) { const b = (by[s.model] = by[s.model] || { loop: 0, cents: 0 }); if (s.kind === "loop") b.loop++; b.cents += s.costCents || 0; }
+        const dom = Object.entries(by).sort((a, b) => (b[1].loop - a[1].loop) || (b[1].cents - a[1].cents))[0][0];
+        const modelCents = st.reduce((a, s) => a + (s.costCents || 0), 0);
+        const side = st.filter((s) => s.model !== dom);
+        const sideCents = side.reduce((a, s) => a + (s.costCents || 0), 0);
+        const share = modelCents > 0 ? sideCents / modelCents : 0;
+        if (share >= 0.25 && sideCents >= 5) {
+          const other = [...new Set(side.map((s) => s.model))][0];
+          console.log(`  ↳ ${Math.round(share * 100)}% of model spend was side-calls (${other}) you did not invoke — cut them at cloud.agenticcontrolplane.com/cost`);
+        }
+      }
+    } catch (e) { /* advice is best-effort — never break the summary */ }
     console.log(`  → https://cloud.agenticcontrolplane.com/sessions/${encodeURIComponent(mine.runKey)}\n`);
   })
   .catch(() => {});
