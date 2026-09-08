@@ -1175,6 +1175,153 @@ export function hardlineFloor(toolName, toolInput) {
   return null;
 }
 
+// ── Context guard ─────────────────────────────────────────────────────
+// Whole-file reads are the cheapest thing an agent does and the most
+// expensive thing it puts in a frontier model's context. The guard sizes a
+// read BEFORE it happens: Read (offset/limit-aware) and the shell dumpers
+// (cat/head/tail/less/more/bat). Piped or redirected dumps pass — those are
+// targeted. readIntent() is pure parsing; the dispatcher counts the lines
+// (I/O) and hands them back as `context.files`.
+
+const DUMP_BINS = new Set(["cat", "head", "tail", "less", "more", "bat", "batcat"]);
+
+/** Split on unquoted | & ; newline, keeping the operator that FOLLOWS each
+ *  segment so a pipe after a dump can be told from a chain before it. */
+function splitSegmentsWithOps(cmd) {
+  const out = [];
+  let buf = "";
+  let quote = null;
+  for (const ch of String(cmd)) {
+    if (quote) { buf += ch; if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
+    if (ch === "|" || ch === "&" || ch === ";" || ch === "\n") {
+      if (buf.trim()) out.push({ seg: buf.trim(), op: ch });
+      buf = "";
+      continue;
+    }
+    buf += ch;
+  }
+  if (buf.trim()) out.push({ seg: buf.trim(), op: "" });
+  return out;
+}
+
+function unquote(t) { return String(t).replace(/^(['"])(.*)\1$/, "$2"); }
+function toCount(v) { if (v === null || v === undefined || v === "") return null; const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null; }
+
+/** head/tail line limits: -N, -nN, -n N, --lines=N, --lines N. Byte ranges
+ *  (-c) and follow (-f) are targeted by construction. */
+function dumpArgs(bin, args) {
+  let limit = null;
+  let targeted = false;
+  const paths = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") { for (const rest of args.slice(i + 1)) paths.push(unquote(rest)); break; }
+    if (!a.startsWith("-") || a === "-") { paths.push(unquote(a)); continue; }
+    if (bin === "head" || bin === "tail") {
+      let m;
+      if ((m = a.match(/^-(\d+)$/))) { limit = toCount(m[1]); continue; }
+      if ((m = a.match(/^-n\+?(\d+)$/))) { limit = toCount(m[1]); continue; }
+      if ((m = a.match(/^--lines=\+?(\d+)$/))) { limit = toCount(m[1]); continue; }
+      if (a === "-n" || a === "--lines") { limit = toCount(String(args[i + 1] || "").replace(/^\+/, "")); i++; continue; }
+      if (a === "-c" || a === "--bytes") { targeted = true; i++; continue; }
+      if (/^-c\d+$/.test(a) || /^--bytes=/.test(a)) { targeted = true; continue; }
+      if (a === "-f" || a === "-F" || a === "--follow") { targeted = true; continue; }
+    }
+    if (bin === "bat" || bin === "batcat") {
+      let m;
+      if ((m = a.match(/^(?:-r|--line-range)=?(\d+):(\d+)$/))) { limit = Math.max(0, toCount(m[2]) - toCount(m[1]) + 1); continue; }
+      if (a === "-r" || a === "--line-range") { const r = String(args[i + 1] || "").match(/^(\d+):(\d+)$/); if (r) limit = Math.max(0, toCount(r[2]) - toCount(r[1]) + 1); i++; continue; }
+    }
+  }
+  // head/tail with no explicit count print 10 lines.
+  if ((bin === "head" || bin === "tail") && limit === null && !targeted) limit = 10;
+  return { limit, targeted, paths };
+}
+
+/**
+ * What would this call pull into context? Returns null when the call is not
+ * a whole-file read, else { via, paths, offset, limit, targeted }:
+ *   via      "Read" | "Bash.cat" | "Bash.head" | …
+ *   paths    files the dispatcher should size
+ *   offset   1-based start line (Read) — lines before it are not read
+ *   limit    max lines read, or null for "to the end"
+ *   targeted true when the shape is already narrow (byte-ranged, followed);
+ *            the guard never blocks these
+ */
+export function readIntent(toolName, toolInput) {
+  const name = String(toolName || "");
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+
+  if (name === "Read" || name === "read_file") {
+    const path = input.file_path || input.path || input.target_file || "";
+    if (!path) return null;
+    const offset = toCount(input.offset);
+    const limit = toCount(input.limit);
+    return { via: "Read", paths: [String(path)], offset: offset && offset > 0 ? offset : null, limit: limit && limit > 0 ? limit : null, targeted: false };
+  }
+
+  if (name === "Bash" || name === "run_terminal_cmd" || name === "shell") {
+    const raw = input.command || input.cmd || "";
+    const cmd = Array.isArray(raw) ? raw.map(String).join(" ") : String(raw);
+    if (!cmd.trim()) return null;
+    for (const { seg, op } of splitSegmentsWithOps(cmd)) {
+      const { bin, args } = parseCommand(seg);
+      if (!DUMP_BINS.has(bin)) continue;
+      if (op === "|") continue;                       // dump feeds a filter — targeted
+      if (/(^|[^\\])>/.test(seg)) continue;            // redirected to a file — never enters context
+      const { limit, targeted, paths } = dumpArgs(bin, args);
+      const files = paths.filter((p) => p && p !== "-");
+      if (!files.length) continue;                    // reads stdin
+      return { via: `Bash.${bin}`, paths: files, offset: null, limit, targeted };
+    }
+    return null;
+  }
+  return null;
+}
+
+const GUARD_MODES = new Set(["off", "shadow", "enforce"]);
+
+/**
+ * Size a read against the guard. `files` maps path → { lines, bytes } as the
+ * dispatcher measured them (unmeasured paths are skipped — the tool surfaces
+ * its own not-found error). Returns null when nothing applies, else
+ * { mode, action, lines, effectiveLines, estTokens, maxLines, paths, via, guidance }.
+ */
+export function contextGuard(intent, files, guard) {
+  if (!intent || !guard || typeof guard !== "object") return null;
+  const mode = GUARD_MODES.has(guard.mode) ? guard.mode : "off";
+  if (mode === "off") return null;
+  const maxLines = toCount(guard.maxLines);
+  if (!maxLines) return null;
+  if (intent.targeted) return null;
+  const known = intent.paths.map((p) => [p, files && files[p]]).filter(([, f]) => f && Number.isFinite(f.lines));
+  if (!known.length) return null;
+  let lines = 0, effectiveLines = 0, bytes = 0;
+  for (const [, f] of known) {
+    lines += f.lines;
+    let eff = f.lines;
+    if (intent.offset) eff = Math.max(0, eff - (intent.offset - 1));
+    if (intent.limit !== null && intent.limit !== undefined) eff = Math.min(eff, intent.limit);
+    effectiveLines += eff;
+    bytes += Number.isFinite(f.bytes) ? f.bytes : 0;
+  }
+  if (effectiveLines <= maxLines) return null;
+  const avgBytesPerLine = lines > 0 && bytes > 0 ? bytes / lines : 40;
+  const estTokens = Math.round((effectiveLines * avgBytesPerLine) / 4);
+  const action = guard.action === "ask" ? "ask" : "deny";
+  return { mode, action, lines, effectiveLines, estTokens, maxLines, paths: known.map(([p]) => p), via: intent.via,
+           guidance: typeof guard.guidance === "string" && guard.guidance.trim() ? guard.guidance.trim() : "" };
+}
+
+/** Default steer, per harness. A block always names the sanctioned path. */
+export function contextGuardSteer(harness) {
+  if (harness === "codex") {
+    return "Read just the section you need (sed -n 'START,ENDp' FILE, or grep -n PATTERN FILE), or send the whole-file read to a subagent so it stays out of this context.";
+  }
+  return "Read just the section you need (offset/limit, or grep for the symbol), or hand the whole-file read to a subagent so it stays out of this context.";
+}
+
 /**
  * Walk a dotted key from most-specific to least, e.g.
  * "Bash.curl.api.github.com" → [..., "Bash.curl", "Bash"].
@@ -1191,15 +1338,29 @@ const SEVERITY = { allow: 0, ask: 1, deny: 2 };
 
 /**
  * Decide a tool call locally.
- * @param policy { default: "allow"|"ask"|"deny", rules: { [key]: "allow"|"ask"|"deny" } }
- * @returns { decision, reason, source, classified }
+ * @param policy { default: "allow"|"ask"|"deny", rules: { [key]: "allow"|"ask"|"deny" },
+ *                 contextGuard?: { maxLines, mode: "off"|"shadow"|"enforce", action?: "deny"|"ask", guidance? } }
+ * @param context { files?: { [path]: { lines, bytes } }, harness?: string } — measured by the dispatcher
+ * @returns { decision, reason, source, classified, contextGuard? }
  */
-export function decide(toolName, toolInput, policy) {
+export function decide(toolName, toolInput, policy, context) {
   const floor = hardlineFloor(toolName, toolInput);
   if (floor) return { decision: "deny", reason: floor, source: "hardline", classified: classifyTool(toolName, toolInput) };
 
   const key = classifyTool(toolName, toolInput);
   const rules = (policy && policy.rules) || {};
+
+  // Context guard: a sized read over the line ceiling. Enforce → deny/ask
+  // with the steer; shadow → decide as usual, but carry what would have
+  // happened (and the tokens it would have kept out of context) so the
+  // audit line records it.
+  const guard = contextGuard(readIntent(toolName, toolInput), context && context.files, policy && policy.contextGuard);
+  if (guard && guard.mode === "enforce") {
+    const steer = guard.guidance || contextGuardSteer(context && context.harness);
+    return { decision: guard.action, source: "context-guard", classified: key, contextGuard: guard,
+             reason: `whole-file read of ${guard.effectiveLines} lines (ceiling ${guard.maxLines}; ~${guard.estTokens} tokens into context). ${steer}` };
+  }
+  const shadow = guard && guard.mode === "shadow" ? guard : undefined;
 
   // EVERY unit of a compound command is policy-checked, and the strictest
   // matched rule wins (deny > ask > allow) — so `true && gcloud …` cannot
@@ -1216,10 +1377,10 @@ export function decide(toolName, toolInput, policy) {
       }
     }
   }
-  if (hit) return { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key };
+  if (hit) return { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key, contextGuard: shadow };
 
   const def = VALID.has(policy && policy.default) ? policy.default : "allow";
-  return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key };
+  return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key, contextGuard: shadow };
 }
 DECIDE
 chmod +x "$CONFIG_DIR/decide.mjs"
@@ -1938,7 +2099,7 @@ if [ "$LOCAL_MODE" = true ]; then
   if [ ! -f "$CONFIG_DIR/policy.json" ]; then
     cat > "$CONFIG_DIR/policy.json" << 'POLICY'
 {
-  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs, force-push to main) always denies regardless of this file. 'default' applies when no rule matches.",
+  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs, force-push to main) always denies regardless of this file. 'default' applies when no rule matches. 'contextGuard' sizes whole-file reads (Read, cat, head, tail, less, more) before they happen: mode shadow only records what a read over maxLines would have put into context (see ~/.acp/audit.jsonl → contextGuard.estTokens); set mode to enforce to block them with a steer toward offset/limit, grep, or a subagent.",
   "default": "allow",
   "rules": {
     "Bash.rm": "ask",
@@ -1946,6 +2107,11 @@ if [ "$LOCAL_MODE" = true ]; then
     "Bash.git.push": "ask",
     "Bash.chmod": "ask",
     "Bash.chown": "ask"
+  },
+  "contextGuard": {
+    "maxLines": 350,
+    "mode": "shadow",
+    "action": "deny"
   }
 }
 POLICY
