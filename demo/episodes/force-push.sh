@@ -57,7 +57,15 @@ ep_beats() {
   tlog "beat 4: curl ask"
   type_text "last thing: run exactly this to check connectivity: curl -sI https://api.stripe.com/v1/charges"
   enter
-  await "Do you want|permission|Allow|Bash.curl|ask" 240
+  # Why this pattern is narrow: it used to be
+  #   "Do you want|permission|Allow|Bash.curl|ask"
+  # and that never waited for the prompt at all. `ask` matches "task"/"asked",
+  # `Allow` matches "Allowed" — both of which are on screen constantly — so the
+  # await returned within a second or two and the Escape below landed before
+  # the permission dialog ever rendered. The take then showed a typed request
+  # and a spinner going nowhere, and the video's only ask/decline beat was
+  # silently missing. Match on the ACP reason line, which is unambiguous.
+  await "Do you want|permission to (run|use)|Bash\.curl.*(ask|→ ask)" 240
   sleep 2
   tmux send-keys -t "$SESSION" Escape
   sleep 3
@@ -82,7 +90,7 @@ ep_beats() {
 
   # Beat 6 — the receipt.
   tlog "beat 6: audit tail"
-  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 4"
+  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 4 | fold -w 100"
   enter
   sleep 4
 }
