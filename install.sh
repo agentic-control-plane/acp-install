@@ -664,9 +664,23 @@ async function handlePreToolUse() {
     }));
     process.exit(0);
   }
+  // A 401/403 is NOT the gateway being down — it is this machine's key
+  // being revoked, mistyped, or from a deleted workspace. Live session
+  // 2026-09-07: a returning user's May key had been revoked; every hook
+  // call for six hours read "gateway unreachable (HTTP 401)", which sounds
+  // like our outage, and the user ran ungoverned until they happened to
+  // visit the console. Say what it is and what fixes it.
+  function keyRejected(status) {
+    if (readFailMode() === "closed") { deny(`ACP rejected this machine's key (HTTP ${status}) — tool call blocked (fail-closed). Re-run the installer or save a new key to ~/.acp/credentials.`); return; }
+    process.stdout.write(JSON.stringify({
+      systemMessage: `[ACP] ⚠ KEY REJECTED (HTTP ${status}): the key in ~/.acp/credentials is revoked or invalid — this call was ALLOWED but ran UNGOVERNED and was not logged, and every call will until it is fixed. Fix: re-run the installer (curl -sf https://agenticcontrolplane.com/install.sh | bash) or create a key at https://cloud.agenticcontrolplane.com/settings/api-keys and save it: echo 'gsk_...' > ~/.acp/credentials`,
+    }));
+    process.exit(0);
+  }
   try {
     const res = await fetch(`${ACP_API}/govern/tool-use`, { method: "POST", headers, body, signal: controller.signal });
     clearTimeout(timeout);
+    if (res.status === 401 || res.status === 403) { keyRejected(res.status); return; }
     if (!res.ok) { unreachable("HTTP " + res.status); return; }
     const data = await res.json();
     if (data.decision === "deny") deny(data.reason || "denied by policy");
@@ -1334,6 +1348,176 @@ export function candidates(key) {
 }
 
 const VALID = new Set(["allow", "ask", "deny"]);
+// ── Destructive floor (ask-level; gatewaystack-connect#1097, plugin#29) ──
+// One rung below the hardline floor: things a human always wants to be asked
+// about, in every mode — a force push, destructive SQL handed to a database
+// client, a remote download piped into a shell, a recursive delete outside
+// the working directory. Never a deny; a policy deny still wins. Scans what
+// will EXECUTE, not what appears: a heredoc body written to a file and quoted
+// prose cannot fire it, and the SQL a client is handed is read in every
+// spelling (flag, positional, here-string, heredoc, piped literal). Same
+// rules and fixtures as the gateway's floor, so an offline call and a
+// governed call agree.
+
+const INTERPRETER_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh", "psql", "pgcli", "mysql", "mariadb", "mycli",
+  "sqlite3", "sqlite", "duckdb", "clickhouse-client", "sqlcmd", "python", "python3", "node", "perl", "ruby", "php", "osascript"]);
+const HEREDOC_RE = /<<(?!<)-?\s*(?:"([A-Za-z_][\w-]*)"|'([A-Za-z_][\w-]*)'|\\?([A-Za-z_][\w-]*))/;
+
+/** Drop the bodies of heredocs whose consumer does not execute them
+ *  (`cat > f <<'EOF'`, `tee`, `gh … --body-file -`). Bodies fed to a shell,
+ *  SQL client, or interpreter stay. An unquoted delimiter still expands
+ *  `$( … )` in the body, so those substitutions are kept in its place. */
+export function stripDataHeredocs(cmd) {
+  const s = String(cmd);
+  if (!s.includes("<<")) return s;
+  const lines = s.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(HEREDOC_RE);
+    if (!m) { out.push(line); continue; }
+    const delim = m[1] ?? m[2] ?? m[3];
+    const quoted = m[1] !== undefined || m[2] !== undefined || m[0].includes("\\");
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) if (lines[j].trim() === delim) { end = j; break; }
+    const body = lines.slice(i + 1, end);
+    out.push(line);
+    const { bin, args } = parseCommand(line.slice(0, m.index));
+    const shellDashC = SHELL_BINS.has(bin) && args.some((a) => /^-[a-z]*c[a-z]*$/i.test(a));
+    if (INTERPRETER_BINS.has(bin) && !shellDashC) out.push(...body);
+    else if (!quoted) { const subs = body.join("\n").match(/\$\([^)]*\)|`[^`]*`/g); if (subs) out.push(subs.join(" ")); }
+    if (end < lines.length) out.push(lines[end]);
+    i = end;
+  }
+  return out.join("\n");
+}
+
+const SQL_CLIENTS = {
+  psql: { opts: ["-c", "--command"] }, pgcli: { opts: ["-c", "--command"] },
+  mysql: { opts: ["-e", "--execute"] }, mariadb: { opts: ["-e", "--execute"] }, mycli: { opts: ["-e", "--execute"] },
+  sqlite3: { opts: ["-cmd"], pos: 1 }, sqlite: { opts: ["-cmd"], pos: 1 },
+  duckdb: { opts: ["-c", "-s", "--command"], pos: 1 },
+  "clickhouse-client": { opts: ["-q", "--query"] }, sqlcmd: { opts: ["-Q", "-q"] },
+};
+
+/** "drop" | "truncate" | "delete" (DELETE with no WHERE) | null. */
+export function sqlStatementKind(sql) {
+  const s = String(sql).replace(/--[^\n]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
+  if (/\bDROP\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|SEQUENCE|USER|ROLE)\b/i.test(s)) return "drop";
+  if (/\bTRUNCATE\b/i.test(s)) return "truncate";
+  for (const st of s.split(";")) if (/\bDELETE\s+FROM\b/i.test(st) && !/\bWHERE\b/i.test(st)) return "delete";
+  return null;
+}
+
+/** Every SQL statement a command hands to a database client. Text that is
+ *  not handed to a client (`echo "DROP …"`, a grep pattern) is not SQL. */
+export function sqlPayloads(cmd) {
+  const out = [];
+  const text = stripDataHeredocs(cmd);
+  const segs = splitSegmentsWithOps(text);
+  for (let i = 0; i < segs.length; i++) {
+    const { bin, args } = parseCommand(segs[i].seg);
+    const spec = SQL_CLIENTS[bin];
+    if (!spec) continue;
+    const positionals = [];
+    for (let k = 0; k < args.length; k++) {
+      const a = args[k];
+      let matched = false;
+      for (const opt of spec.opts) {
+        if (a === opt) { if (args[k + 1] !== undefined) out.push(args[++k]); matched = true; break; }
+        if (a.startsWith(`${opt}=`)) { out.push(a.slice(opt.length + 1)); matched = true; break; }
+        if (opt.length === 2 && !a.startsWith("--") && a.startsWith(opt) && a.length > 2) { out.push(a.slice(2)); matched = true; break; }
+      }
+      if (matched) continue;
+      if (a.startsWith("<<<")) { const rest = a.slice(3) || args[++k] || ""; if (rest) out.push(rest); continue; }
+      if (a.startsWith("<<")) continue; // heredoc marker; body handled below
+      if (!a.startsWith("-")) positionals.push(a);
+    }
+    if (spec.pos !== undefined) out.push(...positionals.slice(spec.pos));
+    // A literal producer piped in: `echo "TRUNCATE t" | psql db`.
+    if (i > 0 && segs[i - 1].op === "|") {
+      const p = parseCommand(segs[i - 1].seg);
+      if (p.bin === "echo" || p.bin === "printf") {
+        const lit = p.args.filter((x) => !x.startsWith("-")).join(" ");
+        if (lit) out.push(lit);
+      }
+    }
+  }
+  // Heredoc bodies fed to a client (kept verbatim by stripDataHeredocs).
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(HEREDOC_RE);
+    if (!m) continue;
+    if (!SQL_CLIENTS[parseCommand(lines[i].slice(0, m.index)).bin]) continue;
+    const delim = m[1] ?? m[2] ?? m[3];
+    const body = [];
+    for (let j = i + 1; j < lines.length && lines[j].trim() !== delim; j++) body.push(lines[j]);
+    if (body.length) out.push(body.join("\n"));
+  }
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+
+const FORCE_PUSH_RE = /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force(?!-with-lease|-if-includes)\b|\s-[a-eg-zA-Z]*f[a-zA-Z]*(?=\s|$)|\s\+[^\s:]+:)/;
+const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*\/)?(?:ba|z|da|k)?sh\b/;
+const SHELL_OF_DOWNLOAD_RE = /\b(?:ba|z|da|k)?sh\s+(?:-[a-zA-Z]+\s+)*(?:-c\s+["']?\$\(\s*(?:curl|wget)\b|<\s*<?\s*\(\s*(?:curl|wget)\b)/;
+const TMP_PATH_RE = /^(?:\/tmp|\/private\/tmp|\/var\/folders|\/var\/tmp|\$\{?TMPDIR\}?)(?:\/|$)/;
+
+/** `rm -r` whose target is absolute, home-relative, parent-relative, or a
+ *  variable — anything the working directory does not contain. */
+function recursiveDeleteOutsideCwd(text, cwd) {
+  const base = cwd ? String(cwd).replace(/\/+$/, "") : null;
+  for (const seg of splitSegments(text)) {
+    const { bin, args } = parseCommand(seg);
+    if (bin !== "rm" || !hasShortOrLongFlag(args, "r", "recursive")) continue;
+    for (const raw of args) {
+      if (raw === "--" || raw.startsWith("-")) continue;
+      const p = raw.replace(/^\$\{?HOME\}?(?=\/|$)/, "~");
+      if (TMP_PATH_RE.test(p)) continue;
+      if (p.startsWith("$")) return "recursive delete of a variable-named path";
+      if (p.startsWith("/") || p.startsWith("~")) {
+        if (base && (p === base || p.startsWith(`${base}/`))) continue;
+        return `recursive delete outside the working directory: ${p}`;
+      }
+      if (/^\.\.(?:\/|$)/.test(p)) return `recursive delete outside the working directory: ${p}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The ask-level floor. Returns a reason a human must be asked, or null.
+ * @param context { cwd?: string } — the caller's working directory when known
+ */
+export function destructiveFloor(toolName, toolInput, context) {
+  const name = String(toolName || "");
+  if (name !== "Bash" && name !== "run_terminal_cmd" && name !== "shell") return null;
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+  const cmd = String(input.command || input.cmd || "");
+  if (!cmd) return null;
+  for (const p of sqlPayloads(cmd)) {
+    const k = sqlStatementKind(p);
+    if (k) return `destructive SQL (${k}): ${p.replace(/\s+/g, " ").slice(0, 120)}`;
+  }
+  // The command, plus every string it hands to another shell (`bash -c …`,
+  // `eval …`), each scanned on its own.
+  const texts = [cmd];
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    const inner = innerShellCommand(bin, args);
+    if (inner) texts.push(inner);
+  }
+  for (const t of texts) {
+    const stripped = stripDataHeredocs(t);
+    // Quoted spans with whitespace are prose, not commands.
+    const masked = stripped.replace(/'[^']*\s[^']*'/g, "''").replace(/"[^"]*\s[^"]*"/g, '""');
+    if (FORCE_PUSH_RE.test(masked)) return "force-pushes over shared git history";
+    if (PIPE_TO_SHELL_RE.test(masked) || SHELL_OF_DOWNLOAD_RE.test(t)) return "pipes a remote download into a shell";
+    const rm = recursiveDeleteOutsideCwd(stripped, context && context.cwd);
+    if (rm) return rm;
+  }
+  return null;
+}
+
 const SEVERITY = { allow: 0, ask: 1, deny: 2 };
 
 /**
@@ -1377,10 +1561,22 @@ export function decide(toolName, toolInput, policy, context) {
       }
     }
   }
-  if (hit) return { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key, contextGuard: shadow };
+  const result = hit
+    ? { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key, contextGuard: shadow }
+    : (() => {
+        const def = VALID.has(policy && policy.default) ? policy.default : "allow";
+        return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key, contextGuard: shadow };
+      })();
 
-  const def = VALID.has(policy && policy.default) ? policy.default : "allow";
-  return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key, contextGuard: shadow };
+  // Destructive floor (#1097): tightens an allow to ask in every mode. A
+  // policy deny or ask already stands; a policy allow cannot loosen it.
+  if (result.decision === "allow") {
+    const destructive = destructiveFloor(toolName, toolInput, context);
+    if (destructive) {
+      return { decision: "ask", reason: `destructive floor: ${destructive}`, source: "destructive-floor", classified: key, contextGuard: shadow, floor: destructive };
+    }
+  }
+  return result;
 }
 DECIDE
 chmod +x "$CONFIG_DIR/decide.mjs"
@@ -1462,6 +1658,109 @@ SUMMARY
     ADDED_PATH=true
   fi
 fi
+
+# ── Shared: priced-launcher template + agent-directive writer ─────────
+# Every "<harness>-acp" launcher is generated from ONE template, so a lesson
+# learned on one harness lands in all of them. (2026-09-07: a Codex agent
+# hand-rolled the provider flag without the key and read three 401s; the
+# fixes — key export, fail-open, full-path directive — live here, not in
+# codex-acp.) Per-harness input is only what genuinely differs:
+#
+#   acp_write_launcher NAME BIN KEY_VAR SUMMARY_PREFIX LAUNCH_SNIPPET
+#     NAME            launcher file name (codex-acp)
+#     BIN             the plain harness binary; also the fail-open target
+#     KEY_VAR         env var this harness's provider/plugin reads the
+#                     workspace key from (ACP_KEY, ACP_BEARER_TOKEN, …).
+#                     ACP_KEY is always exported as well.
+#     SUMMARY_PREFIX  client-name prefix for acp-session-summary ("" = any)
+#     LAUNCH_SNIPPET  the lines that run the harness with the ACP provider
+#                     selected for THIS launch. Must pass "$@" through and
+#                     leave the harness's exit status in $?. May read
+#                     $ACP_KEY and $ACP_TRACE_LEVEL.
+#
+#   acp_write_directive FILE LABEL LAUNCHER BIN [EXTRA_LINE ...]
+#     FILE      global instructions file the harness reads at session start
+#     LABEL     harness name as the agent knows it ("Codex")
+#     LAUNCHER  launcher path as it should appear ("~/.acp/bin/codex-acp");
+#               "" = no launcher line (governance-only harness)
+#     BIN       the plain binary the launcher replaces
+#     EXTRA     harness-specific lines, placed before the launcher line
+#     Delimited + idempotent: only the ACP section is replaced on re-run.
+acp_write_launcher() {
+  _l_name="$1"; _l_bin="$2"; _l_keyvar="$3"; _l_prefix="$4"; _l_launch="$5"
+  mkdir -p "$CONFIG_DIR/bin"
+  _l_snip="$(mktemp "${TMPDIR:-/tmp}/acp-launch.XXXXXX")"
+  printf '%s\n' "$_l_launch" > "$_l_snip"
+  sed -e "s|__NAME__|$_l_name|g" -e "s|__BIN__|$_l_bin|g" -e "s|__KEYVAR__|$_l_keyvar|g" -e "s|__PREFIX__|$_l_prefix|g" << 'LAUNCHER_TEMPLATE' \
+    | awk -v f="$_l_snip" '/^__LAUNCH__$/ { while ((getline l < f) > 0) print l; close(f); next } { print }' \
+    > "$CONFIG_DIR/bin/$_l_name"
+#!/bin/sh
+# __NAME__ — __BIN__ with the ACP cost X-ray.
+# Generated by the ACP installer from one shared launcher template: every
+# <harness>-acp is this file with different parameters, so a fix lands in
+# all of them. Model calls route through the ACP proxy (priced + governed);
+# your own provider login is forwarded unchanged, never ACP's. Plain
+# `__BIN__` stays untouched. Docs: agenticcontrolplane.com
+ACP_KEY="$(cat "$HOME/.acp/credentials" 2>/dev/null)"
+if [ -z "$ACP_KEY" ]; then
+  echo "__NAME__: no ACP credentials (~/.acp/credentials) — re-run the installer without --local. Starting plain __BIN__." >&2
+  exec __BIN__ "$@"
+fi
+export ACP_KEY
+__KEYVAR__="$ACP_KEY"; export __KEYVAR__
+# Fail-open, same rule as the hook (~/.acp/failmode / ACP_FAIL_MODE): if
+# the gateway does not answer at all within 2s, start plain __BIN__ and say
+# so — a session that isn't priced beats no session. `closed` refuses
+# instead. Probe GET / (any HTTP answer counts as reachable): Cloud Run's
+# front end intercepts /healthz and 404s it before the container sees it.
+_acp_fail_mode="${ACP_FAIL_MODE:-$(cat "$HOME/.acp/failmode" 2>/dev/null)}"
+if [ "$_acp_fail_mode" != "closed" ] && command -v curl >/dev/null 2>&1; then
+  _acp_probe="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H 'Accept: application/json' "${ACP_GOVERN_BASE:-https://api.agenticcontrolplane.com}/" 2>/dev/null)"
+  if [ -z "$_acp_probe" ] || [ "$_acp_probe" = "000" ]; then
+    echo "__NAME__: ACP gateway unreachable — starting plain __BIN__; this session's model calls will not be priced or governed. (echo closed > ~/.acp/failmode to refuse instead.)" >&2
+    exec __BIN__ "$@"
+  fi
+fi
+# Opt-in trace capture for THIS launch (ACP_TRACE_LEVEL=full): the launch
+# lines below forward it as the x-trace-level header where the harness can.
+[ -n "$ACP_TRACE_LEVEL" ] && export ACP_TRACE_LEVEL
+__LAUNCH__
+STATUS=$?
+# End-of-session: what it cost + a link to the X-ray. Never blocks exit.
+"$HOME/.acp/bin/acp-session-summary" __PREFIX__ 2>/dev/null || true
+exit $STATUS
+LAUNCHER_TEMPLATE
+  rm -f "$_l_snip"
+  chmod +x "$CONFIG_DIR/bin/$_l_name"
+}
+
+acp_write_directive() {
+  _d_file="$1"; _d_label="$2"; _d_launcher="$3"; _d_bin="$4"; shift 4
+  mkdir -p "$(dirname "$_d_file")"
+  [ -f "$_d_file" ] || touch "$_d_file"
+  node -e '
+    const fs = require("fs");
+    const [p, label, launcher, bin, ...extra] = process.argv.slice(1);
+    const START = "<!-- acp:begin — Agentic Control Plane governance -->";
+    const END = "<!-- acp:end -->";
+    const lines = [START, "## ACP Governance", "",
+      "You are governed by Agentic Control Plane. Every tool call is logged and policy-checked.", ""];
+    for (const l of extra) lines.push(l);
+    if (launcher) lines.push(
+      "- **Cost X-ray (model calls priced):** when launching " + label + " for a user, use `" + launcher + "`",
+      "  instead of `" + bin + "` (full path — it works before a new shell picks up PATH). It reads the workspace",
+      "  key from `~/.acp/credentials` and selects the ACP model provider for that launch only; the user\x27s own",
+      "  provider login is forwarded unchanged. Do NOT hand-configure the provider or export the key yourself —",
+      "  without the key header every model call is a 401. If ACP is unreachable the launcher starts plain `" + bin + "`.");
+    lines.push("", "Activity log: https://cloud.agenticcontrolplane.com/activity", END, "");
+    const section = lines.join("\n");
+    let src = ""; try { src = fs.readFileSync(p, "utf8"); } catch {}
+    const s = src.indexOf(START), e = src.indexOf(END);
+    if (s !== -1 && e !== -1 && e > s) { let t = e + END.length; if (src[t] === "\n") t++; src = src.substring(0, s) + section + src.substring(t); }
+    else { if (src && !src.endsWith("\n")) src += "\n"; src += (src ? "\n" : "") + section; }
+    fs.writeFileSync(p, src);
+  ' "$_d_file" "$_d_label" "$_d_launcher" "$_d_bin" "$@"
+}
 
 # ── Step 1a: Claude Code setup ────────────────────────────────────────
 
@@ -1664,36 +1963,29 @@ if [ "$HAS_CLAUDE" = true ]; then
   # Cloud-only: model-call pricing needs the proxy, so --local skips all of
   # this (no wrapper, no PATH edit — local mode touches no shell rc files).
   if [ "$LOCAL_MODE" = false ]; then
-  mkdir -p "$CONFIG_DIR/bin"
-  cat > "$CONFIG_DIR/bin/claude-acp" << 'WRAPPER'
-#!/bin/sh
-# claude-acp — Claude Code with the ACP cost X-ray.
-# Model calls route through the ACP proxy (priced + governed); Anthropic
-# bills your own subscription/API key (ACP forwards your credential, never
-# its own). Plain `claude` remains untouched. Docs: agenticcontrolplane.com
-ACP_KEY="$(cat "$HOME/.acp/credentials" 2>/dev/null)"
-if [ -z "$ACP_KEY" ]; then
-  echo "claude-acp: no ACP credentials (~/.acp/credentials) — run /acp-connect. Starting plain claude." >&2
-  exec claude "$@"
-fi
-# Opt-in trace capture for THIS launch: ACP_TRACE_LEVEL=full asks the gateway
-# to keep a redacted, size-capped, auto-expiring record of each model call's
-# request and response (x-trace-level header; see agenticcontrolplane.com
-# /docs/trace). Off unless you set it. Headers are newline-separated.
+  # Launch lines only — everything else (key, fail-open, summary) is the
+  # shared template. ANTHROPIC_CUSTOM_HEADERS is newline-separated; the
+  # trace level rides along as x-trace-level when set.
+  CLAUDE_LAUNCH=$(cat << 'EOF'
 ACP_HDRS="x-acp-key: $ACP_KEY"
 if [ -n "$ACP_TRACE_LEVEL" ]; then ACP_HDRS="$ACP_HDRS
 x-trace-level: $ACP_TRACE_LEVEL"; fi
 ANTHROPIC_BASE_URL="${ACP_PROXY_BASE:-https://api.agenticcontrolplane.com/anthropic}" \
 ANTHROPIC_CUSTOM_HEADERS="$ACP_HDRS" \
 claude "$@"
-STATUS=$?
-# End-of-session: what it cost + a link to the X-ray. Never blocks exit.
-"$HOME/.acp/bin/acp-session-summary" 2>/dev/null || true
-exit $STATUS
-WRAPPER
-  chmod +x "$CONFIG_DIR/bin/claude-acp"
+EOF
+)
+  acp_write_launcher claude-acp claude ACP_KEY "" "$CLAUDE_LAUNCH"
   echo "  ${C_GREEN}✓${C_RESET} [Claude Code] Cost X-ray wrapper installed: claude-acp"
   [ "$ADDED_PATH" = true ] && echo "  ${C_DIM}Added ~/.acp/bin to PATH (open a new terminal to pick it up)${C_RESET}"
+
+  # Directive in the file Claude Code reads at every session start. Agents
+  # now set harnesses up on behalf of their users, so the launcher name has
+  # to live where the agent reads, not only in the docs.
+  acp_write_directive "$HOME/.claude/CLAUDE.md" "Claude Code" "~/.acp/bin/claude-acp" claude \
+    '- **Tool calls** are intercepted by the ACP plugin hooks. Nothing extra to do.' \
+    '- Do NOT hand-roll ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS to reach the proxy — the launcher sets both.'
+  echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ~/.claude/CLAUDE.md directive installed — agents launch claude-acp for priced sessions"
   fi # LOCAL_MODE=false (cost X-ray wrapper)
 
   INSTALLED="${INSTALLED:+$INSTALLED, }Claude Code"
@@ -1929,46 +2221,16 @@ PROVIDERBLOCK
   # Idempotent: the ACP section is delimited by markers, so re-running
   # replaces only our section and preserves every other instruction.
   if [ "$LOCAL_MODE" = false ]; then
-  CODEX_AGENTS="$HOME/.codex/AGENTS.md"
-  [ -f "$CODEX_AGENTS" ] || touch "$CODEX_AGENTS"
-  node -e "
-    const fs = require('fs');
-    const p = process.argv[1];
-    const START = '<!-- acp:begin — Agentic Control Plane governance -->';
-    const END = '<!-- acp:end -->';
-    const section = [
-      START,
-      '## ACP Governance',
-      '',
-      'You are governed by Agentic Control Plane. Every tool call is logged and policy-checked.',
-      '',
-      '- **Bash commands** are automatically intercepted by the ACP PreToolUse hook. Nothing extra to do.',
-      '- **Non-Bash tools** (Read, Edit, Write, WebFetch, MCP tools) are NOT hooked in current Codex.',
-      '  Before calling any non-Bash tool, first call the \`acp_check\` MCP tool from the \`acp\` server',
-      '  with \`{tool_name, tool_input}\`. Proceed only if the response is \`{decision: \"allow\"}\`.',
-      '  If \`deny\`, stop and surface the reason to the user.',
-      '- **Skip \`acp_check\`** for the meta-tools \`acp_check\` and \`acp_status\` themselves.',
-      '',
-      'Activity log: https://cloud.agenticcontrolplane.com/activity',
-      END,
-      '',
-    ].join('\n');
-    let src = '';
-    try { src = fs.readFileSync(p, 'utf8'); } catch {}
-    const startIdx = src.indexOf(START);
-    const endIdx = src.indexOf(END);
-    if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-      // Replace existing ACP section (drop one trailing newline if present)
-      let tailStart = endIdx + END.length;
-      if (src[tailStart] === '\n') tailStart++;
-      src = src.substring(0, startIdx) + section + src.substring(tailStart);
-    } else {
-      // Append new section, ensuring a blank line before it
-      if (src && !src.endsWith('\n')) src += '\n';
-      src += (src ? '\n' : '') + section;
-    }
-    fs.writeFileSync(p, src);
-  " "$CODEX_AGENTS"
+  acp_write_directive "$HOME/.codex/AGENTS.md" "Codex" "~/.acp/bin/codex-acp" codex \
+    '- **Bash commands** are automatically intercepted by the ACP PreToolUse hook. Nothing extra to do.' \
+    '- **Non-Bash tools** (Read, Edit, Write, WebFetch, MCP tools) are NOT hooked in current Codex.' \
+    '  Before calling any non-Bash tool, first call the `acp_check` MCP tool from the `acp` server' \
+    '  with `{tool_name, tool_input}`. Proceed only if the response is `{decision: "allow"}`.' \
+    '  If `deny`, stop and surface the reason to the user.' \
+    '- **Skip `acp_check`** for the meta-tools `acp_check` and `acp_status` themselves.' \
+    '- Do NOT hand-roll `codex -c model_provider=acp`: `[model_providers.acp]` in `~/.codex/config.toml` reads' \
+    '  the key from the `ACP_KEY` environment variable, which only the launcher sets. For headless priced runs' \
+    '  use `~/.acp/bin/codex-acp exec …`.'
   echo "  [Codex] AGENTS.md directive installed — Codex will call acp_check before non-Bash tools"
   echo "  ${C_GREEN}✓${C_RESET} [Codex] hooks feature enabled + PreToolUse/PostToolUse hooks + MCP connector wired"
 
@@ -1980,40 +2242,19 @@ PROVIDERBLOCK
   # symmetric with `claude-acp`. BYO auth: `requires_openai_auth = true`
   # means ACP forwards YOUR ChatGPT/API-key login, never its own; OpenAI
   # bills you exactly as before, ACP only observes and governs.
-  mkdir -p "$CONFIG_DIR/bin"
-  cat > "$CONFIG_DIR/bin/codex-acp" << 'CODEXWRAPPER'
-#!/bin/sh
-# codex-acp — Codex CLI with the ACP cost X-ray.
-# Model calls route through the ACP proxy (priced + governed); OpenAI
-# bills your own ChatGPT subscription/API key (ACP forwards your
-# credential, never its own). This selects the `acp` model_provider for
-# THIS invocation only (-c model_provider=acp) — plain `codex` keeps
-# whatever default is in config.toml, untouched. Docs: agenticcontrolplane.com
-ACP_KEY="$(cat "$HOME/.acp/credentials" 2>/dev/null)"
-if [ -z "$ACP_KEY" ]; then
-  echo "codex-acp: no ACP credentials (~/.acp/credentials) — re-run the installer without --local. Starting plain codex." >&2
-  exec codex "$@"
-fi
-export ACP_KEY
-# Opt-in trace capture for THIS launch (ACP_TRACE_LEVEL=full): add the
-# x-trace-level header to the provider for this invocation only. Codex reads
-# env_http_headers values from the environment, so the level never lands in
-# config.toml. Off unless you set it.
+  # Launch lines only — key, fail-open and summary come from the shared
+  # template. Codex reads env_http_headers values from the environment, so
+  # the trace level never lands in config.toml. Summary prefix "codex"
+  # matches both the TUI ("codex") and `codex exec` ("codex_exec").
+  CODEX_LAUNCH=$(cat << 'EOF'
 if [ -n "$ACP_TRACE_LEVEL" ]; then
-  export ACP_TRACE_LEVEL
   codex -c model_provider=acp -c 'model_providers.acp.env_http_headers={ "x-acp-key" = "ACP_KEY", "x-trace-level" = "ACP_TRACE_LEVEL" }' "$@"
 else
   codex -c model_provider=acp "$@"
 fi
-STATUS=$?
-# End-of-session: what it cost + a link to the X-ray. Never blocks exit.
-# Prefix "codex" matches every Codex client the gateway records — the
-# interactive TUI reports "codex", `codex exec` reports "codex_exec"
-# (originator header, codex-cli 0.147.0); "codex_cli" matched neither.
-"$HOME/.acp/bin/acp-session-summary" codex 2>/dev/null || true
-exit $STATUS
-CODEXWRAPPER
-  chmod +x "$CONFIG_DIR/bin/codex-acp"
+EOF
+)
+  acp_write_launcher codex-acp codex ACP_KEY codex "$CODEX_LAUNCH"
   echo "  ${C_GREEN}✓${C_RESET} [Codex] Cost X-ray wrapper installed: codex-acp"
   [ "$ADDED_PATH" = true ] && echo "  ${C_DIM}Added ~/.acp/bin to PATH (open a new terminal to pick it up)${C_RESET}"
   else
@@ -2084,15 +2325,269 @@ if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
       command: ["sh", "-c", "exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header \"Authorization: Bearer $(cat ~/.acp/credentials)\""],
       enabled: true,
     };
+    // Cost X-ray provider — the block /blog/opencode-cost-tracking used to
+    // ask people to paste by hand. Written but NOT selected: no top-level
+    // "model" change, so plain opencode keeps its backend; opencode-acp
+    // (below) selects acp/<model> for one launch, same contract as
+    // claude-acp / codex-acp. Fill-only: a provider the user already
+    // configured under "acp" is left exactly as they wrote it.
+    c.provider = c.provider || {};
+    if (!c.provider.acp) {
+      c.provider.acp = {
+        npm: "@ai-sdk/openai-compatible",
+        name: "Agentic Control Plane",
+        options: {
+          baseURL: "https://api.agenticcontrolplane.com/v1",
+          apiKey: "{env:ACP_BEARER_TOKEN}",
+        },
+        models: { "gemini-3.5-flash": {} },
+      };
+    }
     fs.writeFileSync(p, JSON.stringify(c, null, 2));
   ' "$OPENCODE_JSON" && {
-    echo "  ${C_GREEN}✓${C_RESET} [opencode] Plugin registered (acp-opencode) + permission gate + introspection MCP"
+    echo "  ${C_GREEN}✓${C_RESET} [opencode] Plugin registered (acp-opencode) + permission gate + introspection MCP + cost X-ray provider"
     echo "     Restart opencode — it installs the plugin from npm and governs every tool call."
     INSTALLED="${INSTALLED:+$INSTALLED, }opencode"
   } || {
     echo "  ${C_RED}✗${C_RESET} [opencode] Config update failed — add \"plugin\": [\"acp-opencode\"] to $OPENCODE_JSON"
   }
+
+  # opencode-acp — same shared launcher template as claude-acp / codex-acp.
+  # The plugin and the provider block above both read ACP_BEARER_TOKEN.
+  # Launch lines: select the ACP provider for this launch. ACP_OPENCODE_MODEL
+  # picks the model id behind the proxy (routed by id: gemini-*, gpt-*,
+  # claude-*). Only pass --model when this opencode build advertises it;
+  # otherwise the provider is still in the model picker and nothing breaks.
+  OPENCODE_LAUNCH=$(cat << 'EOF'
+_acp_model="acp/${ACP_OPENCODE_MODEL:-gemini-3.5-flash}"
+if opencode --help 2>&1 | grep -q -- "--model"; then
+  opencode --model "$_acp_model" "$@"
+else
+  echo "opencode-acp: this opencode build has no --model flag — pick $_acp_model in the model picker." >&2
+  opencode "$@"
 fi
+EOF
+)
+  acp_write_launcher opencode-acp opencode ACP_BEARER_TOKEN opencode "$OPENCODE_LAUNCH"
+  echo "  ${C_GREEN}✓${C_RESET} [opencode] Cost X-ray wrapper installed: opencode-acp"
+
+  # Directive in the global rules file opencode reads (~/.config/opencode/AGENTS.md).
+  acp_write_directive "$HOME/.config/opencode/AGENTS.md" "opencode" "~/.acp/bin/opencode-acp" opencode \
+    '- **Tool calls** are governed by the acp-opencode plugin. Nothing extra to do.' \
+    '- The `acp` provider block is already in `~/.config/opencode/opencode.json` and reads `ACP_BEARER_TOKEN`' \
+    '  from the environment; do not edit it or set a top-level "model" — the launcher selects `acp/<model>`.'
+  echo "  ${C_GREEN}✓${C_RESET} [opencode] ~/.config/opencode/AGENTS.md directive installed — agents launch opencode-acp for priced sessions"
+fi
+
+# ── Step 1f: priced launchers for the plugin-governed harnesses ────────
+#
+# Every harness whose model traffic can be pointed at the proxy per launch
+# gets the same "<harness>-acp" launcher from the shared template, plus the
+# directive in the file its agent reads at session start. One place, one
+# pattern: a fix to the template above reaches all of these. Harnesses
+# whose model traffic CANNOT be redirected (Cursor CLI, Antigravity, fx —
+# no base-URL override exists) are governance-only and are listed as such
+# on /cost-tracking; nothing is written for them here.
+# Cloud-only: pricing needs the proxy, so --local skips this whole step.
+if [ "$LOCAL_MODE" = false ]; then
+
+  # Hermes Agent — Anthropic-native backends take the proxy per launch via
+  # env (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN=<ACP key>, workspace-
+  # billed Anthropic). OpenAI-compatible backends read base_url from
+  # Hermes's own config; `acp-hermes proxy-setup --verify` registers the
+  # proxy there once, and the launcher says so when it isn't done.
+  if [ "$HAS_HERMES" = true ]; then
+    HERMES_LAUNCH=$(cat << 'EOF'
+if ! grep -qs "api.agenticcontrolplane.com" "$HOME/.hermes/config.yaml" "$HOME/.hermes/config.toml" "$HOME/.hermes/config.json" 2>/dev/null; then
+  echo "hermes-acp: Anthropic-native model calls are priced via env; for an OpenAI-compatible backend run once: acp-hermes proxy-setup --verify" >&2
+fi
+ANTHROPIC_BASE_URL="${ACP_PROXY_BASE:-https://api.agenticcontrolplane.com/anthropic}/v1" \
+ANTHROPIC_AUTH_TOKEN="$ACP_KEY" \
+hermes "$@"
+EOF
+)
+    acp_write_launcher hermes-acp hermes ACP_BEARER_TOKEN hermes "$HERMES_LAUNCH"
+    acp_write_directive "$HOME/.hermes/SOUL.md" "Hermes" "~/.acp/bin/hermes-acp" hermes \
+      '- **Tool calls** are governed by the acp-hermes plugin. Nothing extra to do.'
+    echo "  ${C_GREEN}✓${C_RESET} [Hermes] Cost X-ray wrapper installed: hermes-acp (+ ~/.hermes/SOUL.md directive)"
+  fi
+
+  # Qwen Code — reads OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL from
+  # the environment when its auth type is "openai" (Gemini-CLI lineage).
+  # The launcher sets all three for one launch; ACP_QWEN_MODEL picks the
+  # model id behind the proxy (routed by id: gemini-*, gpt-*, claude-*).
+  if [ "$HAS_QWEN" = true ]; then
+    QWEN_LAUNCH=$(cat << 'EOF'
+if ! grep -qs '"selectedType": *"openai"' "$HOME/.qwen/settings.json" 2>/dev/null; then
+  echo "qwen-acp: Qwen Code only honours OPENAI_BASE_URL when its auth type is openai — pick 'OpenAI' under /auth once, then this launch is priced." >&2
+fi
+OPENAI_BASE_URL="${ACP_PROXY_BASE_OPENAI:-https://api.agenticcontrolplane.com/v1}" \
+OPENAI_API_KEY="$ACP_KEY" \
+OPENAI_MODEL="${ACP_QWEN_MODEL:-gemini-3.5-flash}" \
+qwen "$@"
+EOF
+)
+    acp_write_launcher qwen-acp qwen ACP_BEARER_TOKEN qwen "$QWEN_LAUNCH"
+    acp_write_directive "$HOME/.qwen/QWEN.md" "Qwen Code" "~/.acp/bin/qwen-acp" qwen \
+      '- **Tool calls** are intercepted by the ACP PreToolUse/PostToolUse hooks. Nothing extra to do.' \
+      '- Do NOT export OPENAI_BASE_URL / OPENAI_API_KEY yourself to reach the proxy — the launcher sets them for one launch.'
+    echo "  ${C_GREEN}✓${C_RESET} [Qwen Code] Cost X-ray wrapper installed: qwen-acp (+ ~/.qwen/QWEN.md directive)"
+  fi
+
+  # pi — no env override; the proxy is a named provider in
+  # ~/.pi/agent/models.json (exact block from /integrations/pi), which the
+  # installer writes fill-only, and `--model acp/<id>` selects it for one
+  # launch. pi resolves the key itself from "!cat ~/.acp/credentials".
+  if [ "$HAS_PI" = true ]; then
+    PI_MODELS="$HOME/.pi/agent/models.json"
+    mkdir -p "$HOME/.pi/agent"
+    [ -f "$PI_MODELS" ] || printf '{}\n' > "$PI_MODELS"
+    node -e '
+      const fs = require("fs");
+      const p = process.argv[1];
+      let c = {};
+      try { c = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+      c.providers = c.providers || {};
+      if (!c.providers.acp) {
+        c.providers.acp = {
+          baseUrl: "https://api.agenticcontrolplane.com/v1",
+          api: "openai-completions",
+          apiKey: "!cat ~/.acp/credentials",
+          compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+          models: [{ id: "gemini-3.5-flash" }],
+        };
+        fs.writeFileSync(p, JSON.stringify(c, null, 2) + "\n");
+      }
+    ' "$PI_MODELS" 2>/dev/null || echo "  ${C_RED}✗${C_RESET} [pi] Could not update $PI_MODELS — add the acp provider from /integrations/pi by hand"
+    PI_LAUNCH=$(cat << 'EOF'
+pi --model "acp/${ACP_PI_MODEL:-gemini-3.5-flash}" "$@"
+EOF
+)
+    acp_write_launcher pi-acp pi ACP_BEARER_TOKEN pi "$PI_LAUNCH"
+    acp_write_directive "$HOME/.pi/agent/AGENTS.md" "pi" "~/.acp/bin/pi-acp" pi \
+      '- **Tool calls** are governed by the ACP extension in ~/.pi/agent/extensions. Nothing extra to do.' \
+      '- The `acp` provider is already in `~/.pi/agent/models.json`; do not add it again — the launcher passes `--model acp/<id>`.'
+    echo "  ${C_GREEN}✓${C_RESET} [pi] Cost X-ray wrapper installed: pi-acp (+ acp provider in models.json, ~/.pi/agent/AGENTS.md directive)"
+  fi
+
+  # Prime Agent (pi fork) — providers are registered by extensions
+  # (pi.registerProvider, verified in pi's core/extensions/types.ts). The
+  # extension below is GATED on ACP_PROXY=1, which only prime-acp sets, so
+  # plain `prime` never loads it. apiKey "$ACP_KEY" is env-interpolated by
+  # pi's resolve-config-value. Paths follow the confirmed
+  # ~/.prime/agent/extensions/ convention.
+  if [ "$HAS_PRIME" = true ]; then
+    PRIME_EXT_DIR="$HOME/.prime/agent/extensions"
+    mkdir -p "$PRIME_EXT_DIR"
+    cat > "$PRIME_EXT_DIR/acp-proxy.ts" << 'PRIMEEXT'
+// acp-proxy — ACP cost X-ray provider for Prime Agent. Written by the ACP
+// installer; active ONLY when launched via ~/.acp/bin/prime-acp (ACP_PROXY=1).
+// Plain `prime` never loads this provider. Docs: agenticcontrolplane.com
+export default function (pi: any) {
+  if (process.env.ACP_PROXY !== "1") return;
+  pi.registerProvider("acp", {
+    name: "Agentic Control Plane",
+    baseUrl: "https://api.agenticcontrolplane.com/v1",
+    apiKey: "$ACP_KEY",
+    api: "openai-completions",
+    models: [{ id: process.env.ACP_PRIME_MODEL || "gemini-3.5-flash", name: process.env.ACP_PRIME_MODEL || "gemini-3.5-flash" }],
+  });
+}
+PRIMEEXT
+    # Binary name differs by install (`prime-agent` from npm, `prime` alias);
+    # resolve once here so the launcher and its fail-open target agree.
+    PRIME_BIN=prime
+    command -v prime-agent > /dev/null 2>&1 && PRIME_BIN=prime-agent
+    PRIME_LAUNCH="ACP_PROXY=1 $PRIME_BIN --model \"acp/\${ACP_PRIME_MODEL:-gemini-3.5-flash}\" \"\$@\""
+    acp_write_launcher prime-acp "$PRIME_BIN" ACP_BEARER_TOKEN prime "$PRIME_LAUNCH"
+    acp_write_directive "$HOME/.prime/agent/AGENTS.md" "Prime Agent" "~/.acp/bin/prime-acp" prime \
+      '- **Tool calls** are governed by the ACP extension in ~/.prime/agent/extensions. Nothing extra to do.' \
+      '- The `acp` provider is registered by ~/.prime/agent/extensions/acp-proxy.ts only when ACP_PROXY=1 — the launcher sets it; do not register a provider by hand.'
+    echo "  ${C_GREEN}✓${C_RESET} [Prime Agent] Cost X-ray wrapper installed: prime-acp (+ acp-proxy extension, ~/.prime/agent/AGENTS.md directive)"
+  fi
+
+  # Grok Build — custom model = [model.<name>] in ~/.grok/config.toml with
+  # base_url + env_key (xAI settings reference: "prefer env_key over
+  # hardcoding api_key"), selected per launch with `-m acp`; [models]
+  # default is left alone. Fill-only: an existing [model.acp] is kept.
+  if [ "$HAS_GROK" = true ]; then
+    GROK_TOML="${GROK_HOME:-$HOME/.grok}/config.toml"
+    mkdir -p "$(dirname "$GROK_TOML")"
+    [ -f "$GROK_TOML" ] || touch "$GROK_TOML"
+    if ! grep -q "^\[model\.acp\]" "$GROK_TOML"; then
+      cat >> "$GROK_TOML" << 'GROKBLOCK'
+
+[model.acp]
+name = "Agentic Control Plane"
+model = "gemini-3.5-flash"
+base_url = "https://api.agenticcontrolplane.com/v1"
+env_key = "ACP_KEY"
+api_backend = "chat_completions"
+GROKBLOCK
+    fi
+    GROK_LAUNCH=$(cat << 'EOF'
+grok -m acp "$@"
+EOF
+)
+    acp_write_launcher grok-acp grok ACP_BEARER_TOKEN grok "$GROK_LAUNCH"
+    acp_write_directive "${GROK_HOME:-$HOME/.grok}/AGENTS.md" "Grok Build" "~/.acp/bin/grok-acp" grok \
+      '- **Tool calls** are intercepted by the ACP hook in ~/.grok/hooks. Nothing extra to do.' \
+      '- `[model.acp]` is already in ~/.grok/config.toml and reads the key from the `ACP_KEY` environment variable; do not add an api_key — the launcher passes `-m acp`.'
+    echo "  ${C_GREEN}✓${C_RESET} [Grok Build] Cost X-ray wrapper installed: grok-acp (+ [model.acp] in config.toml, AGENTS.md directive)"
+  fi
+
+  # DeepSeek Harness — provider block in $DSH_HOME/settings.yaml (verbatim
+  # shape from docs/user/guide/providers.md; apiKeyEnv reads the launcher's
+  # env). dsh has no --model flag: the model is chosen per profile, so the
+  # launcher exports the key and says how to select the provider. Fill-only
+  # and comment-preserving: written only when no acp provider exists.
+  if [ "$HAS_DSH" = true ]; then
+    DSH_SETTINGS="${DSH_HOME:-$HOME/.dsh}/settings.yaml"
+    mkdir -p "$(dirname "$DSH_SETTINGS")"
+    [ -f "$DSH_SETTINGS" ] || touch "$DSH_SETTINGS"
+    if ! grep -qE "^\s+acp:\s*$" "$DSH_SETTINGS" && ! grep -q "api.agenticcontrolplane.com" "$DSH_SETTINGS"; then
+      if grep -q "^llm-pi-ai:" "$DSH_SETTINGS" && grep -q "^  providers:" "$DSH_SETTINGS"; then
+        echo "  ${C_DIM}[dsh] settings.yaml already has llm-pi-ai.providers — add the acp provider from /integrations/dsh by hand (installer never rewrites your YAML).${C_RESET}"
+      else
+        cat >> "$DSH_SETTINGS" << 'DSHBLOCK'
+
+# Agentic Control Plane cost X-ray provider (written by the ACP installer).
+# Select it in a profile's default model as provider "acp"; dsh-acp exports the key.
+llm-pi-ai:
+  providers:
+    acp:
+      apiKeyEnv: ACP_BEARER_TOKEN
+      api: openai-completions
+      baseURL: https://api.agenticcontrolplane.com/v1
+      compat:
+        supportsDeveloperRole: false
+        maxTokensField: max_tokens
+      models:
+        - id: gemini-3.5-flash
+DSHBLOCK
+      fi
+    fi
+    DSH_LAUNCH=$(cat << 'EOF'
+# dsh has no --model flag: pick provider "acp" as the default model in the
+# profile you launch (dsh --profile <p>); the key travels via ACP_BEARER_TOKEN.
+dsh "$@"
+EOF
+)
+    acp_write_launcher dsh-acp dsh ACP_BEARER_TOKEN dsh "$DSH_LAUNCH"
+    acp_write_directive "${DSH_HOME:-$HOME/.dsh}/AGENTS.md" "DeepSeek Harness" "~/.acp/bin/dsh-acp" dsh \
+      '- **Tool calls** are governed by the ACP Cordis plugin. Nothing extra to do.' \
+      '- The `acp` provider is already in settings.yaml (reads ACP_BEARER_TOKEN); select it as the default model of the profile you run. Do not paste a key into settings.yaml.'
+    echo "  ${C_GREEN}✓${C_RESET} [dsh] Cost X-ray wrapper installed: dsh-acp (+ acp provider in settings.yaml, AGENTS.md directive)"
+  fi
+
+  # Not written here, and why (see the table on /cost-tracking):
+  #   Cursor CLI, Antigravity, fx, Muse Code — no way to redirect model
+  #     traffic to an external base URL; tool governance only.
+  #   OpenClaw — a long-lived gateway daemon; the model endpoint is
+  #     persistent config (openclaw config set models.providers.acp …), not
+  #     a per-launch choice, so /integrations/openclaw documents it instead.
+
+fi # LOCAL_MODE=false (Step 1f)
 
 # ── Local mode: skip login, seed a default policy, done ───────────────
 if [ "$LOCAL_MODE" = true ]; then
@@ -2142,7 +2637,18 @@ fi
 if [ -f "$CREDS_FILE" ]; then
   echo "  Credentials already configured."
   echo ""
-  read -p "  Reconfigure? (y/N) " -n 1 -r </dev/tty
+  # No TTY (an agent re-running the installer for its user, CI, a piped
+  # shell): keep the existing key and finish cleanly instead of dying on
+  # /dev/tty — found by scripts/test-install-sandbox.sh, 2026-09-07.
+  # ACP_RECONFIGURE=1 forces a re-login without a prompt.
+  REPLY=""
+  if [ "${ACP_RECONFIGURE:-0}" = 1 ]; then
+    REPLY=y
+  elif [ -r /dev/tty ] && read -p "  Reconfigure? (y/N) " -n 1 -r </dev/tty 2>/dev/null; then
+    :
+  else
+    echo "  (no terminal — keeping the existing key; set ACP_RECONFIGURE=1 to re-login)"
+  fi
   echo ""
   if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo ""
@@ -2373,6 +2879,22 @@ if [ "$HAS_CODEX" = true ]; then
   echo "    codex-acp    the above PLUS every model call priced —"
   echo "                 the cost X-ray, billed to your own account"
 fi
+if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
+  echo ""
+  echo "  opencode — two ways to run:"
+  echo "    opencode      tool calls governed + audited (plugin)"
+  echo "    opencode-acp  the above PLUS every model call priced —"
+  echo "                  the cost X-ray via the acp/<model> provider"
+fi
+# Same two-line summary for every launcher Step 1f generated.
+for _lb in hermes qwen pi prime grok dsh; do
+  if [ "$LOCAL_MODE" = false ] && [ -x "$CONFIG_DIR/bin/$_lb-acp" ]; then
+    echo ""
+    echo "  $_lb — two ways to run:"
+    echo "    $_lb        tool calls governed + audited"
+    echo "    $_lb-acp    the above PLUS every model call priced (the cost X-ray)"
+  fi
+done
 if [ "$HAS_OPENCLAW" = true ]; then
   echo "  Then restart OpenClaw to activate the plugin"
 fi
