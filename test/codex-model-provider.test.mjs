@@ -129,17 +129,37 @@ test("installer never sets model_provider as the config.toml default (plain `cod
   );
 });
 
-test("codex-acp wrapper opts in via `-c model_provider=acp` (verified CLI flag: codex --help -> -c, --config <key=value>)", () => {
-  const m = INSTALL_SH.match(/cat > "\$CONFIG_DIR\/bin\/codex-acp" << 'CODEXWRAPPER'\n([\s\S]*?)\nCODEXWRAPPER\n/);
-  assert.ok(m, "could not find the codex-acp wrapper heredoc in install.sh");
-  const wrapper = m[1];
-  assert.match(wrapper, /codex -c model_provider=acp "\$@"/);
-  assert.match(wrapper, /exec codex "\$@"/, "must fall back to plain codex when no ACP credentials exist");
-  assert.match(
-    wrapper,
-    /acp-session-summary" codex 2>/,
-    "codex-acp should pass the prefix \"codex\" (matches the TUI's \"codex\" and codex exec's \"codex_exec\"; \"codex_cli\" matched neither), not the claude-c default",
+// The launcher is no longer a per-harness heredoc. Every `<harness>-acp` is
+// now generated from ONE shared template with per-harness parameters
+// (`acp_write_launcher NAME BIN KEY_VAR SUMMARY_PREFIX LAUNCH_SNIPPET`), so a
+// fix lands in every launcher at once. This test used to pin the old
+// `CODEXWRAPPER` heredoc and went red the moment the mirror caught up with
+// canonical — assert the BEHAVIOR across the generator instead, which also
+// covers the launchers this file never mentioned.
+test("codex-acp opts in via `-c model_provider=acp` (verified CLI flag: codex --help -> -c, --config <key=value>)", () => {
+  const snippet = INSTALL_SH.match(/CODEX_LAUNCH=\$\(cat << 'EOF'\n([\s\S]*?)\nEOF\n\)/);
+  assert.ok(snippet, "could not find the CODEX_LAUNCH snippet in install.sh");
+  assert.match(snippet[1], /codex -c model_provider=acp "\$@"/);
+
+  const call = INSTALL_SH.match(/^\s*acp_write_launcher codex-acp (\S+) (\S+) (\S+) "\$CODEX_LAUNCH"/m);
+  assert.ok(call, "codex-acp is not wired through the shared launcher generator");
+  const [, bin, keyVar, prefix] = call;
+  assert.equal(bin, "codex", "fail-open target must be the plain codex binary");
+  assert.equal(keyVar, "ACP_KEY");
+  assert.equal(
+    prefix,
+    "codex",
+    'codex-acp should pass the prefix "codex" (matches the TUI\'s "codex" and codex exec\'s "codex_exec"; "codex_cli" matched neither), not the claude-c default',
   );
+});
+
+test("the shared launcher template fails open to the plain binary and reports the session", () => {
+  const t = INSTALL_SH.match(/<< 'LAUNCHER_TEMPLATE'[\s\S]*?\n([\s\S]*?)\nLAUNCHER_TEMPLATE\n/);
+  assert.ok(t, "could not find the shared LAUNCHER_TEMPLATE in install.sh");
+  const template = t[1];
+  assert.match(template, /exec __BIN__ "\$@"/, "must fall back to the plain harness when no ACP credentials exist");
+  assert.match(template, /acp-session-summary" __PREFIX__ 2>/, "session summary must be filtered by the harness prefix");
+  assert.match(template, /^__LAUNCH__$/m, "the per-harness launch snippet must be substituted in");
 });
 
 test("acp-session-summary filters by the caller's clientName prefix, defaulting to claude-c", () => {
