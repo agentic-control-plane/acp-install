@@ -514,6 +514,176 @@ export function candidates(key) {
 }
 
 const VALID = new Set(["allow", "ask", "deny"]);
+// ── Destructive floor (ask-level; gatewaystack-connect#1097, plugin#29) ──
+// One rung below the hardline floor: things a human always wants to be asked
+// about, in every mode — a force push, destructive SQL handed to a database
+// client, a remote download piped into a shell, a recursive delete outside
+// the working directory. Never a deny; a policy deny still wins. Scans what
+// will EXECUTE, not what appears: a heredoc body written to a file and quoted
+// prose cannot fire it, and the SQL a client is handed is read in every
+// spelling (flag, positional, here-string, heredoc, piped literal). Same
+// rules and fixtures as the gateway's floor, so an offline call and a
+// governed call agree.
+
+const INTERPRETER_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh", "psql", "pgcli", "mysql", "mariadb", "mycli",
+  "sqlite3", "sqlite", "duckdb", "clickhouse-client", "sqlcmd", "python", "python3", "node", "perl", "ruby", "php", "osascript"]);
+const HEREDOC_RE = /<<(?!<)-?\s*(?:"([A-Za-z_][\w-]*)"|'([A-Za-z_][\w-]*)'|\\?([A-Za-z_][\w-]*))/;
+
+/** Drop the bodies of heredocs whose consumer does not execute them
+ *  (`cat > f <<'EOF'`, `tee`, `gh … --body-file -`). Bodies fed to a shell,
+ *  SQL client, or interpreter stay. An unquoted delimiter still expands
+ *  `$( … )` in the body, so those substitutions are kept in its place. */
+export function stripDataHeredocs(cmd) {
+  const s = String(cmd);
+  if (!s.includes("<<")) return s;
+  const lines = s.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(HEREDOC_RE);
+    if (!m) { out.push(line); continue; }
+    const delim = m[1] ?? m[2] ?? m[3];
+    const quoted = m[1] !== undefined || m[2] !== undefined || m[0].includes("\\");
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) if (lines[j].trim() === delim) { end = j; break; }
+    const body = lines.slice(i + 1, end);
+    out.push(line);
+    const { bin, args } = parseCommand(line.slice(0, m.index));
+    const shellDashC = SHELL_BINS.has(bin) && args.some((a) => /^-[a-z]*c[a-z]*$/i.test(a));
+    if (INTERPRETER_BINS.has(bin) && !shellDashC) out.push(...body);
+    else if (!quoted) { const subs = body.join("\n").match(/\$\([^)]*\)|`[^`]*`/g); if (subs) out.push(subs.join(" ")); }
+    if (end < lines.length) out.push(lines[end]);
+    i = end;
+  }
+  return out.join("\n");
+}
+
+const SQL_CLIENTS = {
+  psql: { opts: ["-c", "--command"] }, pgcli: { opts: ["-c", "--command"] },
+  mysql: { opts: ["-e", "--execute"] }, mariadb: { opts: ["-e", "--execute"] }, mycli: { opts: ["-e", "--execute"] },
+  sqlite3: { opts: ["-cmd"], pos: 1 }, sqlite: { opts: ["-cmd"], pos: 1 },
+  duckdb: { opts: ["-c", "-s", "--command"], pos: 1 },
+  "clickhouse-client": { opts: ["-q", "--query"] }, sqlcmd: { opts: ["-Q", "-q"] },
+};
+
+/** "drop" | "truncate" | "delete" (DELETE with no WHERE) | null. */
+export function sqlStatementKind(sql) {
+  const s = String(sql).replace(/--[^\n]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
+  if (/\bDROP\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|SEQUENCE|USER|ROLE)\b/i.test(s)) return "drop";
+  if (/\bTRUNCATE\b/i.test(s)) return "truncate";
+  for (const st of s.split(";")) if (/\bDELETE\s+FROM\b/i.test(st) && !/\bWHERE\b/i.test(st)) return "delete";
+  return null;
+}
+
+/** Every SQL statement a command hands to a database client. Text that is
+ *  not handed to a client (`echo "DROP …"`, a grep pattern) is not SQL. */
+export function sqlPayloads(cmd) {
+  const out = [];
+  const text = stripDataHeredocs(cmd);
+  const segs = splitSegmentsWithOps(text);
+  for (let i = 0; i < segs.length; i++) {
+    const { bin, args } = parseCommand(segs[i].seg);
+    const spec = SQL_CLIENTS[bin];
+    if (!spec) continue;
+    const positionals = [];
+    for (let k = 0; k < args.length; k++) {
+      const a = args[k];
+      let matched = false;
+      for (const opt of spec.opts) {
+        if (a === opt) { if (args[k + 1] !== undefined) out.push(args[++k]); matched = true; break; }
+        if (a.startsWith(`${opt}=`)) { out.push(a.slice(opt.length + 1)); matched = true; break; }
+        if (opt.length === 2 && !a.startsWith("--") && a.startsWith(opt) && a.length > 2) { out.push(a.slice(2)); matched = true; break; }
+      }
+      if (matched) continue;
+      if (a.startsWith("<<<")) { const rest = a.slice(3) || args[++k] || ""; if (rest) out.push(rest); continue; }
+      if (a.startsWith("<<")) continue; // heredoc marker; body handled below
+      if (!a.startsWith("-")) positionals.push(a);
+    }
+    if (spec.pos !== undefined) out.push(...positionals.slice(spec.pos));
+    // A literal producer piped in: `echo "TRUNCATE t" | psql db`.
+    if (i > 0 && segs[i - 1].op === "|") {
+      const p = parseCommand(segs[i - 1].seg);
+      if (p.bin === "echo" || p.bin === "printf") {
+        const lit = p.args.filter((x) => !x.startsWith("-")).join(" ");
+        if (lit) out.push(lit);
+      }
+    }
+  }
+  // Heredoc bodies fed to a client (kept verbatim by stripDataHeredocs).
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(HEREDOC_RE);
+    if (!m) continue;
+    if (!SQL_CLIENTS[parseCommand(lines[i].slice(0, m.index)).bin]) continue;
+    const delim = m[1] ?? m[2] ?? m[3];
+    const body = [];
+    for (let j = i + 1; j < lines.length && lines[j].trim() !== delim; j++) body.push(lines[j]);
+    if (body.length) out.push(body.join("\n"));
+  }
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+
+const FORCE_PUSH_RE = /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force(?!-with-lease|-if-includes)\b|\s-[a-eg-zA-Z]*f[a-zA-Z]*(?=\s|$)|\s\+[^\s:]+:)/;
+const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*\/)?(?:ba|z|da|k)?sh\b/;
+const SHELL_OF_DOWNLOAD_RE = /\b(?:ba|z|da|k)?sh\s+(?:-[a-zA-Z]+\s+)*(?:-c\s+["']?\$\(\s*(?:curl|wget)\b|<\s*<?\s*\(\s*(?:curl|wget)\b)/;
+const TMP_PATH_RE = /^(?:\/tmp|\/private\/tmp|\/var\/folders|\/var\/tmp|\$\{?TMPDIR\}?)(?:\/|$)/;
+
+/** `rm -r` whose target is absolute, home-relative, parent-relative, or a
+ *  variable — anything the working directory does not contain. */
+function recursiveDeleteOutsideCwd(text, cwd) {
+  const base = cwd ? String(cwd).replace(/\/+$/, "") : null;
+  for (const seg of splitSegments(text)) {
+    const { bin, args } = parseCommand(seg);
+    if (bin !== "rm" || !hasShortOrLongFlag(args, "r", "recursive")) continue;
+    for (const raw of args) {
+      if (raw === "--" || raw.startsWith("-")) continue;
+      const p = raw.replace(/^\$\{?HOME\}?(?=\/|$)/, "~");
+      if (TMP_PATH_RE.test(p)) continue;
+      if (p.startsWith("$")) return "recursive delete of a variable-named path";
+      if (p.startsWith("/") || p.startsWith("~")) {
+        if (base && (p === base || p.startsWith(`${base}/`))) continue;
+        return `recursive delete outside the working directory: ${p}`;
+      }
+      if (/^\.\.(?:\/|$)/.test(p)) return `recursive delete outside the working directory: ${p}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The ask-level floor. Returns a reason a human must be asked, or null.
+ * @param context { cwd?: string } — the caller's working directory when known
+ */
+export function destructiveFloor(toolName, toolInput, context) {
+  const name = String(toolName || "");
+  if (name !== "Bash" && name !== "run_terminal_cmd" && name !== "shell") return null;
+  const input = typeof toolInput === "string" ? safeParse(toolInput) : (toolInput || {});
+  const cmd = String(input.command || input.cmd || "");
+  if (!cmd) return null;
+  for (const p of sqlPayloads(cmd)) {
+    const k = sqlStatementKind(p);
+    if (k) return `destructive SQL (${k}): ${p.replace(/\s+/g, " ").slice(0, 120)}`;
+  }
+  // The command, plus every string it hands to another shell (`bash -c …`,
+  // `eval …`), each scanned on its own.
+  const texts = [cmd];
+  for (const seg of splitSegments(cmd)) {
+    const { bin, args } = parseCommand(seg);
+    const inner = innerShellCommand(bin, args);
+    if (inner) texts.push(inner);
+  }
+  for (const t of texts) {
+    const stripped = stripDataHeredocs(t);
+    // Quoted spans with whitespace are prose, not commands.
+    const masked = stripped.replace(/'[^']*\s[^']*'/g, "''").replace(/"[^"]*\s[^"]*"/g, '""');
+    if (FORCE_PUSH_RE.test(masked)) return "force-pushes over shared git history";
+    if (PIPE_TO_SHELL_RE.test(masked) || SHELL_OF_DOWNLOAD_RE.test(t)) return "pipes a remote download into a shell";
+    const rm = recursiveDeleteOutsideCwd(stripped, context && context.cwd);
+    if (rm) return rm;
+  }
+  return null;
+}
+
 const SEVERITY = { allow: 0, ask: 1, deny: 2 };
 
 /**
@@ -557,8 +727,20 @@ export function decide(toolName, toolInput, policy, context) {
       }
     }
   }
-  if (hit) return { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key, contextGuard: shadow };
+  const result = hit
+    ? { decision: hit.r, reason: `local policy: ${hit.cand} → ${hit.r}`, source: "policy", classified: key, contextGuard: shadow }
+    : (() => {
+        const def = VALID.has(policy && policy.default) ? policy.default : "allow";
+        return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key, contextGuard: shadow };
+      })();
 
-  const def = VALID.has(policy && policy.default) ? policy.default : "allow";
-  return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key, contextGuard: shadow };
+  // Destructive floor (#1097): tightens an allow to ask in every mode. A
+  // policy deny or ask already stands; a policy allow cannot loosen it.
+  if (result.decision === "allow") {
+    const destructive = destructiveFloor(toolName, toolInput, context);
+    if (destructive) {
+      return { decision: "ask", reason: `destructive floor: ${destructive}`, source: "destructive-floor", classified: key, contextGuard: shadow, floor: destructive };
+    }
+  }
+  return result;
 }
