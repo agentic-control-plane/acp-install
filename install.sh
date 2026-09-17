@@ -14,6 +14,10 @@ set -e
 #   1. Detect which AI clients are installed
 #        Claude Code · Cursor · OpenAI Codex CLI · OpenClaw
 #
+#   1b. SHOW YOU THAT LIST and ask which of them to govern, naming the
+#       files each one touches, before writing anything at all. Enter
+#       takes everything found; `n` writes nothing and exits.
+#
 #   2. Write ~/.acp/govern.mjs (the hook dispatcher script — shared across clients)
 #
 #   3. Register PreToolUse + PostToolUse hooks in each detected client's config:
@@ -34,6 +38,14 @@ set -e
 #
 # Usage:
 #   curl -sf https://agenticcontrolplane.com/install.sh | bash
+#
+#   Skip the question (CI, or you already know what you want):
+#     … | bash -s -- --all
+#     … | bash -s -- --only=claude-code,cursor
+#   With no terminal to ask on, the default is everything detected.
+#
+# Undo:
+#   acp-uninstall        (removes every file listed below)
 #
 # Review the source before running:
 #   curl -sf https://agenticcontrolplane.com/install.sh | less
@@ -101,14 +113,324 @@ if command -v openclaw > /dev/null 2>&1; then
   HAS_OPENCLAW=true
 fi
 
-# Hermes Agent — governed via its native pip plugin. One front door: this
-# installer performs the plugin install itself (David 2026-07-21: fold every
-# harness into the one-liner). Fail-open: any step failing degrades to
-# printing the manual commands, never a broken half-install.
+# Every remaining harness is detected HERE, before a single byte is written,
+# because the consent gate below needs the whole list in front of it. Each
+# one's install block still lives further down next to its own notes; the
+# gate reaches them by clearing HAS_* for anything the user didn't pick.
+
+# Hermes Agent — governed via its native pip plugin.
 HAS_HERMES=false
 if command -v hermes > /dev/null 2>&1; then
   HAS_HERMES=true
 fi
+
+# DeepSeek Harness — native plugin, per profile.
+HAS_DSH=false
+DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+if command -v dsh > /dev/null 2>&1 || [ -d "$DSH_HOME_DIR/profiles" ]; then
+  HAS_DSH=true
+fi
+
+# pi (earendil-works) — a global extension file. The ~/.pi/agent dir is the
+# reliable signal; `command -v pi` alone can match an unrelated binary named
+# pi, so require the dir when falling back to PATH.
+HAS_PI=false
+PI_EXT_DIR="$HOME/.pi/agent/extensions"
+if [ -d "$HOME/.pi/agent" ] || { command -v pi > /dev/null 2>&1 && [ -d "$HOME/.pi" ]; }; then
+  HAS_PI=true
+fi
+
+# Prime Agent — same shape as pi; require the dir on the PATH fallback.
+HAS_PRIME=false
+PRIME_EXT_DIR="$HOME/.prime/agent/extensions"
+if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent > /dev/null 2>&1 && [ -d "$HOME/.prime" ]; }; then
+  HAS_PRIME=true
+fi
+
+# Muse Code — plugin bundle; require the config dir on the PATH fallback.
+HAS_MUSE=false
+if [ -d "$HOME/.config/muse" ] || { command -v muse > /dev/null 2>&1 && [ -x "$HOME/.local/bin/muse" ]; }; then
+  HAS_MUSE=true
+fi
+
+# Grok Build — purpose-built hook in ~/.grok/hooks.
+HAS_GROK=false
+if [ -d "$HOME/.grok" ] || command -v grok > /dev/null 2>&1; then
+  HAS_GROK=true
+fi
+
+# Google Antigravity (agy) — one shared registration for CLI, IDE and app.
+HAS_AGY=false
+if command -v agy > /dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
+  HAS_AGY=true
+fi
+
+# opencode (sst/opencode) — global config/plugins under ~/.config/opencode.
+if [ -d "$HOME/.config/opencode" ] || command -v opencode > /dev/null 2>&1; then
+  HAS_OPENCODE=true
+fi
+
+# Qwen Code (QwenLM/qwen-code, Gemini CLI lineage) — hooks are Claude Code's
+# contract (PreToolUse/PostToolUse, hookSpecificOutput.permissionDecision,
+# exit 2 = block) read from ~/.qwen/settings.json; timeouts are milliseconds.
+HAS_QWEN=false
+if [ -d "$HOME/.qwen" ] || command -v qwen > /dev/null 2>&1; then
+  HAS_QWEN=true
+fi
+
+# ── Consent: what we found, and what you actually want governed ────────
+#
+# Two people signed up on 2026-09-17, looked at what had just been written
+# to their machines, and spent the rest of their session taking it back off.
+# Neither was ever asked. An installer that wires every agent tool on the
+# box without showing you the list first reads like something you caught
+# rather than something you chose — so show the list, say plainly what each
+# entry means, and let people pick.
+#
+# Everything detected is the default, because governing one harness and not
+# another leaves a hole. A default, though, not a fait accompli.
+HARNESS_SLUG=(); HARNESS_NAME=(); HARNESS_FILES=(); HARNESS_NOTE=()
+_offer() { # slug detected Label files note
+  if [ "$2" != true ]; then return 0; fi
+  HARNESS_SLUG+=("$1"); HARNESS_NAME+=("$3"); HARNESS_FILES+=("$4"); HARNESS_NOTE+=("$5")
+}
+
+_offer claude-code "$HAS_CLAUDE" "Claude Code" \
+  "~/.claude/settings.json · ~/.claude/CLAUDE.md" \
+  "Approval prompts appear inline in your session. Adds a claude-acp launcher that prices model calls."
+_offer cursor "$HAS_CURSOR" "Cursor" \
+  "~/.cursor/hooks.json · ~/.cursor/mcp.json" \
+  "Covers tool calls made by Cursor's agent, not your own editing."
+_offer codex "$HAS_CODEX" "Codex CLI" \
+  "~/.codex/config.toml · ~/.codex/AGENTS.md" \
+  "Codex has no approval prompt, so a policy that would ask blocks instead. Enables Codex's hooks feature."
+_offer openclaw "$HAS_OPENCLAW" "OpenClaw" \
+  "~/.openclaw/settings.json" \
+  "Hook on every tool call."
+_offer opencode "$HAS_OPENCODE" "opencode" \
+  "~/.config/opencode/" \
+  "Hook on every tool call, via its plugin system."
+_offer qwen-code "$HAS_QWEN" "Qwen Code" \
+  "~/.qwen/settings.json" \
+  "Hook on every tool call; reads Claude Code's hook contract."
+_offer hermes "$HAS_HERMES" "Hermes Agent" \
+  "its pip environment (acp-hermes)" \
+  "Installs a Python package into the environment that runs hermes."
+_offer dsh "$HAS_DSH" "DeepSeek Harness" \
+  "$DSH_HOME_DIR/profiles" \
+  "Adds a plugin to each profile via its own plugin manager."
+_offer pi "$HAS_PI" "pi" \
+  "$PI_EXT_DIR/acp.ts" \
+  "A global extension file, so governance is on before any repo is opened."
+_offer prime-agent "$HAS_PRIME" "Prime Agent" \
+  "$PRIME_EXT_DIR/acp.ts" \
+  "A global extension file, loaded without a project-trust prompt."
+_offer muse "$HAS_MUSE" "Muse Code" \
+  "~/.config/muse/" \
+  "Plugin bundle. Its background agent makes tool calls of its own, which will appear in your audit."
+_offer grok "$HAS_GROK" "Grok Build" \
+  "~/.grok/hooks/acp.json" \
+  "Purpose-built hook. Grok also auto-loads Claude-format hooks, so this is the one that actually decides."
+_offer agy "$HAS_AGY" "Antigravity" \
+  "~/.gemini/config/hooks.json" \
+  "One registration shared by its CLI, IDE and app. Merged under our own key, never overwriting yours."
+
+SELECTED=""
+_selected() { case " $SELECTED " in *" $1 "*) return 0;; esac; return 1; }
+
+# Is this harness ALREADY governed on this machine? Used only by --update,
+# to tell "refresh what you run" apart from "adopt something new". Each probe
+# looks for the artifact that harness's own install block writes, so a
+# half-finished install reads as not-wired and gets repaired rather than
+# skipped. Only ever called from an `if`, so a false return is a verdict.
+_already_wired() {
+  case "$1" in
+    claude-code) [ -f "$HOME/.claude/settings.json" ] && grep -q 'govern' "$HOME/.claude/settings.json" 2>/dev/null ;;
+    cursor)      [ -f "$HOME/.cursor/hooks.json" ] && grep -q 'govern' "$HOME/.cursor/hooks.json" 2>/dev/null ;;
+    codex)       [ -f "$HOME/.codex/config.toml" ] && grep -q 'acp' "$HOME/.codex/config.toml" 2>/dev/null ;;
+    openclaw)    [ -f "$HOME/.openclaw/settings.json" ] && grep -q 'govern' "$HOME/.openclaw/settings.json" 2>/dev/null ;;
+    opencode)    [ -f "$HOME/.config/opencode/opencode.json" ] && grep -q 'acp' "$HOME/.config/opencode/opencode.json" 2>/dev/null ;;
+    qwen-code)   [ -f "$HOME/.qwen/settings.json" ] && grep -q 'govern' "$HOME/.qwen/settings.json" 2>/dev/null ;;
+    hermes)      [ -f "$HOME/.hermes/SOUL.md" ] && grep -q 'acp:begin' "$HOME/.hermes/SOUL.md" 2>/dev/null ;;
+    dsh)         [ -f "$DSH_HOME_DIR/settings.yaml" ] && grep -q 'agenticcontrolplane' "$DSH_HOME_DIR/settings.yaml" 2>/dev/null ;;
+    pi)          [ -f "$PI_EXT_DIR/acp.ts" ] ;;
+    prime-agent) [ -f "$PRIME_EXT_DIR/acp.ts" ] ;;
+    muse)        [ -f "$HOME/.config/muse/AGENTS.md" ] && grep -q 'acp:begin' "$HOME/.config/muse/AGENTS.md" 2>/dev/null ;;
+    grok)        [ -f "$HOME/.grok/hooks/acp.json" ] ;;
+    agy)         [ -f "$HOME/.gemini/config/hooks.json" ] && grep -q 'acp' "$HOME/.gemini/config/hooks.json" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+_select_all() { SELECTED=""; for _s in "${HARNESS_SLUG[@]}"; do SELECTED="$SELECTED $_s"; done; }
+
+# Non-interactive selection, for CI and for anyone who'd rather not be asked:
+#   --only=claude-code,cursor   --all   ACP_ONLY=claude-code
+ACP_ONLY="${ACP_ONLY:-}"
+for _a in "$@"; do
+  case "$_a" in
+    --only=*) ACP_ONLY="${_a#--only=}" ;;
+    --all|--yes|-y) ACP_ONLY="all" ;;
+  esac
+done
+
+_parse_pick() {
+  local _raw _tok _idx _s _found
+  _raw="$(printf '%s' "$1" | tr ',' ' ')"
+  SELECTED=""
+  for _tok in $_raw; do
+    case "$_tok" in
+      [0-9]*)
+        _idx=$((_tok - 1))
+        if [ "$_idx" -ge 0 ] && [ "$_idx" -lt "${#HARNESS_SLUG[@]}" ]; then
+          SELECTED="$SELECTED ${HARNESS_SLUG[$_idx]}"
+        else
+          echo "  ${C_DIM}Ignoring \"$_tok\" — there is no item $_tok.${C_RESET}"
+        fi
+        ;;
+      *)
+        _found=false
+        for _s in "${HARNESS_SLUG[@]}"; do
+          if [ "$_s" = "$_tok" ]; then SELECTED="$SELECTED $_s"; _found=true; fi
+        done
+        if [ "$_found" != true ]; then
+          echo "  ${C_DIM}Ignoring \"$_tok\" — not one of the tools found here.${C_RESET}"
+        fi
+        ;;
+    esac
+  done
+}
+
+if [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = false ]; then
+  echo ""
+  echo "  Agentic Control Plane"
+  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  if [ "${#HARNESS_SLUG[@]}" -eq 1 ]; then
+    echo "  Found one agent tool on this machine:"
+  else
+    echo "  Found ${#HARNESS_SLUG[@]} agent tools on this machine:"
+  fi
+  echo ""
+  for _i in "${!HARNESS_SLUG[@]}"; do
+    printf "    %d) %s\n" "$((_i + 1))" "${HARNESS_NAME[$_i]}"
+    printf "       %s\n" "${C_DIM}writes: ${HARNESS_FILES[$_i]}${C_RESET}"
+    printf "       %s\n" "${C_DIM}${HARNESS_NOTE[$_i]}${C_RESET}"
+  done
+  echo ""
+  echo "  For each one you pick, ACP adds a hook that runs before and after"
+  echo "  every tool call your agent makes. The hook records the call — tool"
+  echo "  name, a truncated preview of the arguments and the result, and the"
+  echo "  decision — to your workspace, and can ask or block according to your"
+  echo "  policy. Nothing is blocked until you write a policy. Your agents keep"
+  echo "  working if ACP is unreachable."
+  echo ""
+  echo "  ${C_DIM}Shared, once: ~/.acp/ plus one marked line adding ~/.acp/bin to PATH"
+  echo "  in your shell rc. We append inside acp:begin/acp:end markers and never"
+  echo "  overwrite what you wrote.${C_RESET}"
+  echo ""
+  echo "  ${C_DIM}Remove all of it:   acp-uninstall${C_RESET}"
+  echo "  ${C_DIM}What we store:      https://agenticcontrolplane.com/trust${C_RESET}"
+  echo ""
+
+  if [ "$ACP_ONLY" = "all" ]; then
+    _select_all
+    echo "  Governing all of them."
+  elif [ -n "$ACP_ONLY" ]; then
+    _parse_pick "$ACP_ONLY"
+  elif [ -r /dev/tty ]; then
+    printf "  Which should ACP govern? [Enter = all · 1,3 = pick · n = none]: "
+    _reply=""
+    read -r _reply < /dev/tty || _reply=""
+    echo ""
+    case "$_reply" in
+      "") _select_all ;;
+      n|N|no|NO|none|q|Q|quit)
+        echo "  Nothing installed. Nothing was written to this machine."
+        echo ""
+        exit 0
+        ;;
+      *) _parse_pick "$_reply" ;;
+    esac
+  else
+    _select_all
+    echo "  ${C_DIM}No terminal to ask on — governing all of the above. Narrow it with"
+    echo "  --only=<names>, or remove everything later with acp-uninstall.${C_RESET}"
+  fi
+
+  if [ -z "$SELECTED" ]; then
+    echo "  Nothing selected, so nothing was written to this machine."
+    echo "  Re-run and pick by number, or: --only=claude-code"
+    echo ""
+    exit 0
+  fi
+
+  # The gate reaches every install block below through these flags alone —
+  # each block keeps its own logic and its own notes.
+  if ! _selected claude-code; then HAS_CLAUDE=false; fi
+  if ! _selected cursor;      then HAS_CURSOR=false; fi
+  if ! _selected codex;       then HAS_CODEX=false; fi
+  if ! _selected openclaw;    then HAS_OPENCLAW=false; fi
+  if ! _selected opencode;    then HAS_OPENCODE=false; fi
+  if ! _selected qwen-code;   then HAS_QWEN=false; fi
+  if ! _selected hermes;      then HAS_HERMES=false; fi
+  if ! _selected dsh;         then HAS_DSH=false; fi
+  if ! _selected pi;          then HAS_PI=false; fi
+  if ! _selected prime-agent; then HAS_PRIME=false; fi
+  if ! _selected muse;        then HAS_MUSE=false; fi
+  if ! _selected grok;        then HAS_GROK=false; fi
+  if ! _selected agy;         then HAS_AGY=false; fi
+
+elif [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = true ]; then
+  # An update refreshes what you already run. It does NOT adopt a harness
+  # you never chose. Observed 2026-09-17: `acp-update` on a machine wired
+  # for Claude Code, Codex and opencode silently installed governance into
+  # pi and Antigravity as well, because they had appeared on the box since
+  # the original install. Refreshing what is wired is not a new decision;
+  # taking over a new harness is, and an update is the last place someone
+  # expects to be asked to make one. So: name them, touch nothing, and say
+  # exactly how to opt in.
+  _new_found=""
+  for _i in "${!HARNESS_SLUG[@]}"; do
+    if ! _already_wired "${HARNESS_SLUG[$_i]}"; then
+      _new_found="${_new_found:+$_new_found }${HARNESS_SLUG[$_i]}"
+      case "${HARNESS_SLUG[$_i]}" in
+        claude-code) HAS_CLAUDE=false ;;
+        cursor)      HAS_CURSOR=false ;;
+        codex)       HAS_CODEX=false ;;
+        openclaw)    HAS_OPENCLAW=false ;;
+        opencode)    HAS_OPENCODE=false ;;
+        qwen-code)   HAS_QWEN=false ;;
+        hermes)      HAS_HERMES=false ;;
+        dsh)         HAS_DSH=false ;;
+        pi)          HAS_PI=false ;;
+        prime-agent) HAS_PRIME=false ;;
+        muse)        HAS_MUSE=false ;;
+        grok)        HAS_GROK=false ;;
+        agy)         HAS_AGY=false ;;
+      esac
+    fi
+  done
+  if [ -n "$_new_found" ]; then
+    echo ""
+    echo "  New on this machine since you installed ACP:${C_RESET}"
+    for _s in $_new_found; do
+      for _i in "${!HARNESS_SLUG[@]}"; do
+        if [ "${HARNESS_SLUG[$_i]}" = "$_s" ]; then
+          echo "    ${HARNESS_NAME[$_i]}  ${C_DIM}(${HARNESS_FILES[$_i]})${C_RESET}"
+        fi
+      done
+    done
+    echo "  ${C_DIM}Left alone — an update refreshes what you already run, it doesn't"
+    echo "  take over something new. To govern them too:${C_RESET}"
+    echo "    curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --only=$(echo "$_new_found" | tr ' ' ',')"
+    echo ""
+  fi
+fi
+
+# Hermes Agent — governed via its native pip plugin. One front door: this
+# installer performs the plugin install itself (David 2026-07-21: fold every
+# harness into the one-liner). Fail-open: any step failing degrades to
+# printing the manual commands, never a broken half-install.
 # Cloud-only: acp-hermes governs via a workspace token (without one it passes
 # through), so --local skips the plugin install rather than wiring a no-op.
 if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = true ]; then
@@ -152,11 +474,6 @@ fi
 # the one-liner). Plugins are profile-scoped, so install into every existing
 # profile; `dsh plugin add` is idempotent (pnpm re-links the same package).
 # Fail-open: any refusal degrades to printing the manual command.
-HAS_DSH=false
-DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
-if command -v dsh > /dev/null 2>&1 || [ -d "$DSH_HOME_DIR/profiles" ]; then
-  HAS_DSH=true
-fi
 # Cloud-only like Hermes: @agenticcontrolplane/dsh needs a workspace credential; local
 # decisions aren't wired there yet.
 if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = true ]; then
@@ -198,13 +515,6 @@ fi
 # one-front-door rule. Extensions are files under ~/.pi/agent/extensions/;
 # the global path loads without a project-trust prompt, so governance is on
 # before any repo is opened. Fail-open: a fetch failure prints the manual path.
-HAS_PI=false
-PI_EXT_DIR="$HOME/.pi/agent/extensions"
-# The ~/.pi/agent dir is the reliable signal; `command -v pi` alone can match
-# an unrelated binary named pi, so require the dir when falling back to PATH.
-if [ -d "$HOME/.pi/agent" ] || { command -v pi > /dev/null 2>&1 && [ -d "$HOME/.pi" ]; }; then
-  HAS_PI=true
-fi
 # Cloud-only like Hermes/dsh: the extension reads ~/.acp/credentials; local
 # decisions aren't wired there yet.
 if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = true ]; then
@@ -237,13 +547,6 @@ fi
 # headless fix for prime's hasUI print-mode bug). Same one-front-door rule.
 # Extensions under ~/.prime/agent/extensions/ load without a project-trust
 # prompt. Fail-open: a fetch failure prints the manual path.
-HAS_PRIME=false
-PRIME_EXT_DIR="$HOME/.prime/agent/extensions"
-# The ~/.prime/agent dir is the reliable signal; `command -v prime-agent`
-# alone could match an unrelated binary, so require the dir on PATH fallback.
-if [ -d "$HOME/.prime/agent" ] || { command -v prime-agent > /dev/null 2>&1 && [ -d "$HOME/.prime" ]; }; then
-  HAS_PRIME=true
-fi
 # Cloud-only like pi: the extension reads ~/.acp/credentials; local decisions
 # aren't wired there yet.
 if [ "$HAS_PRIME" = true ] && [ "$LOCAL_MODE" = true ]; then
@@ -275,12 +578,6 @@ fi
 # management CLI, approved hooks fire without it). Our npm package IS the
 # plugin bundle. Same one-front-door rule as Hermes/dsh/pi. Fail-open: any
 # refusal degrades to printing the manual commands.
-HAS_MUSE=false
-# The ~/.config/muse dir is the reliable signal; `command -v muse` alone could
-# match an unrelated binary, so require the config dir when falling back to PATH.
-if [ -d "$HOME/.config/muse" ] || { command -v muse > /dev/null 2>&1 && [ -x "$HOME/.local/bin/muse" ]; }; then
-  HAS_MUSE=true
-fi
 # Cloud-only like Hermes/dsh/pi: Muse clears the hook environment, so the
 # plugin reads ~/.acp/credentials; local decisions aren't wired there yet.
 if [ "$HAS_MUSE" = true ] && [ "$LOCAL_MODE" = true ]; then
@@ -322,10 +619,6 @@ fi
 # from ~/.claude/settings.json but doesn't parse Claude's output vocabulary,
 # so the Claude hook alone would fire and be ignored — this purpose-built hook
 # is the governed path. Fail-open: any refusal prints the manual commands.
-HAS_GROK=false
-if [ -d "$HOME/.grok" ] || command -v grok > /dev/null 2>&1; then
-  HAS_GROK=true
-fi
 # Cloud-only like Hermes/dsh/pi/Muse: the hook reads ~/.acp/credentials.
 if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = true ]; then
   echo "  ${C_DIM}Grok Build detected — skipped in --local mode (its ACP hook needs a workspace; local decisions aren't wired there yet).${C_RESET}"
@@ -356,10 +649,6 @@ fi
 # Google Antigravity (agy) — CLI, IDE, and app read ONE shared registration at
 # ~/.gemini/config/hooks.json. We MERGE under our own "acp" key via node (the
 # hook needs node anyway) — never overwrite: the file may hold user hooks.
-HAS_AGY=false
-if command -v agy > /dev/null 2>&1 || [ -d "$HOME/.gemini/antigravity-cli" ]; then
-  HAS_AGY=true
-fi
 if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = true ]; then
   echo "  ${C_DIM}Antigravity detected — skipped in --local mode (its ACP hook needs a workspace; local decisions aren't wired there yet).${C_RESET}"
   echo ""
@@ -387,18 +676,6 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
     echo "  Guide: https://agenticcontrolplane.com/integrations/antigravity"
   fi
   echo ""
-fi
-
-# opencode (sst/opencode) — global config/plugins live under ~/.config/opencode.
-if [ -d "$HOME/.config/opencode" ] || command -v opencode > /dev/null 2>&1; then
-  HAS_OPENCODE=true
-fi
-# Qwen Code (QwenLM/qwen-code, Gemini CLI lineage) — hooks are Claude Code's contract
-# (PreToolUse/PostToolUse, hookSpecificOutput.permissionDecision, exit 2 = block) read
-# from ~/.qwen/settings.json; timeouts are milliseconds; matcher "*" = every tool.
-HAS_QWEN=false
-if [ -d "$HOME/.qwen" ] || command -v qwen > /dev/null 2>&1; then
-  HAS_QWEN=true
 fi
 
 if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ] && [ "$HAS_QWEN" = false ]; then
@@ -472,8 +749,7 @@ _add_slug() { if [ -n "$CLIENT_SLUG" ]; then CLIENT_SLUG="$CLIENT_SLUG+$1"; else
 [ -n "$CLIENT_SLUG" ] || CLIENT_SLUG="cli"
 
 echo ""
-echo "  Agentic Control Plane"
-echo "  Identity & governance for $TARGETS"
+echo "  Wiring $TARGETS"
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
