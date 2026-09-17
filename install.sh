@@ -23,11 +23,10 @@ set -e
 #
 #   4. For Codex specifically:
 #        - Enable [features].codex_hooks = true in ~/.codex/config.toml
-#        - Add [mcp_servers.acp] block so non-Bash tools flow through the
-#          ACP MCP connector
-#        - Write ~/.codex/AGENTS.md section instructing Codex to call
-#          `acp_check` before non-Bash tool calls (instruction-layer
-#          governance for tools Codex hooks don't yet cover)
+#        - Add [mcp_servers.acp] block so `acp_check` / `acp_status` are
+#          available for explicit questions ("am I allowed to X?")
+#        - Write ~/.codex/AGENTS.md section confirming hooks already
+#          govern every tool call (Bash and non-Bash alike)
 #
 #   5. Open your browser to authenticate and provision an ACP workspace
 #
@@ -52,6 +51,14 @@ CREDS_FILE="$CONFIG_DIR/credentials"
 LOCAL_MODE=false
 for _a in "$@"; do case "$_a" in --local|--no-login) LOCAL_MODE=true ;; esac; done
 [ "${ACP_LOCAL:-}" = "1" ] && LOCAL_MODE=true
+
+# ── Update mode: refresh in place, never mint a key ─────────────────────
+# What `acp-update` runs. Re-fetches govern.mjs, rewrites every launcher and
+# hook registration and directive block for harnesses already detected on
+# this machine, then stops before Step 2 (Authenticate) — no device flow,
+# no prompt, ~/.acp/credentials is left exactly as it was.
+UPDATE_MODE=false
+for _a in "$@"; do case "$_a" in --update) UPDATE_MODE=true ;; esac; done
 
 # ── Terminal colors ───────────────────────────────────────────────────
 # tput-guarded: green success / red failure / dim secondary, mirroring
@@ -480,6 +487,9 @@ mkdir -p "$CONFIG_DIR"
 # without an installer release. The inline copy below is the offline
 # fallback only.
 
+# Old version, read from whatever is already on disk, before it's
+# overwritten below — acp-update prints old -> new so a refresh is visible.
+GOVERN_OLD_VERSION="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$CONFIG_DIR/govern.mjs" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
 echo "  [ACP] Installing governance hook script..."
 GOVERN_RAW_URL="https://raw.githubusercontent.com/agentic-control-plane/claude-code-acp-plugin/main/bin/govern.mjs"
 # In --local mode the fetched copy must actually carry the local decision
@@ -827,6 +837,14 @@ GOVERN
 fi
 chmod +x "$CONFIG_DIR/govern.mjs"
 echo "  ${C_GREEN}✓${C_RESET} [ACP] Governance hook installed ($GOVERN_SOURCE)"
+GOVERN_NEW_VERSION="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$CONFIG_DIR/govern.mjs" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
+if [ "$UPDATE_MODE" = true ]; then
+  echo "  ${C_DIM}govern.mjs: ${GOVERN_OLD_VERSION:-none} → ${GOVERN_NEW_VERSION:-unknown}${C_RESET}"
+fi
+# Fresh marker on every install/update run (not just --update): the hook
+# reads its mtime to stay quiet about being outdated for 24h after a
+# refresh, instead of nagging the same minute it was just brought current.
+date +%s > "$CONFIG_DIR/.stale-notice" 2>/dev/null || true
 
 # ── Shared: write decide.mjs (LOCAL decision engine — no cloud, no login) ──
 # Mirrors decide.mjs in the repo verbatim. Pure, self-contained; govern.mjs
@@ -1642,6 +1660,21 @@ exit 0
 SUMMARY
   chmod +x "$CONFIG_DIR/bin/acp-session-summary"
 
+  # acp-update — refresh govern.mjs, every launcher, hook registration, and
+  # directive block for harnesses already detected here, without repeating
+  # device-flow login. Re-runs this same install.sh with --update, which
+  # Step 2 (Authenticate) below short-circuits before any device code is
+  # requested — ~/.acp/credentials is untouched. This is the command the
+  # governance hook points people at once it can tell it's outdated.
+  cat > "$CONFIG_DIR/bin/acp-update" << 'ACPUPDATE'
+#!/bin/sh
+# acp-update — refresh the ACP governance hook, launchers, and harness
+# registrations in place. Never mints a key: no device flow, no prompts.
+# Safe to run repeatedly. Docs: agenticcontrolplane.com
+exec curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --update "$@"
+ACPUPDATE
+  chmod +x "$CONFIG_DIR/bin/acp-update"
+
   # Put ~/.acp/bin on PATH (idempotent; marked line so upgrades don't stack).
   # Shared because either priced launcher (claude-acp, codex-acp) needs it —
   # written here once so a Codex-only machine gets it too, not just Claude.
@@ -2144,9 +2177,10 @@ if [ "$HAS_CODEX" = true ]; then
   # Authorization header reads ~/.acp/credentials at runtime — no install-
   # time API key needed, and credential rotation is automatic (overwrite
   # the file, restart Codex).
-  # Cloud-only: the MCP connector and the AGENTS.md acp_check directive both
-  # talk to the hosted gateway. --local wires neither — local mode must make
-  # zero network calls, so Codex gets hook coverage (shell commands) only.
+  # Cloud-only: the MCP connector and the AGENTS.md directive both talk to
+  # the hosted gateway. --local wires neither — local mode must make zero
+  # network calls. The PreToolUse/PostToolUse hooks (registered below) are
+  # unaffected either way and cover every local tool call, not just shell commands.
   if [ "$LOCAL_MODE" = false ] && ! grep -q "^\[mcp_servers\.acp\]" "$CODEX_TOML"; then
     cat >> "$CODEX_TOML" << 'MCPBLOCK'
 
@@ -2216,22 +2250,24 @@ PROVIDERBLOCK
   " "$CODEX_HOOKS"
 
   # Write/update ~/.codex/AGENTS.md with the ACP governance directive.
-  # Codex reads AGENTS.md at every session start; this is how we tell it
-  # to call acp_check before non-Bash tools (hooks only cover Bash today).
+  # Codex reads AGENTS.md at every session start. The PreToolUse/PostToolUse
+  # hooks registered above use matcher '.*' — every local tool call, not just
+  # Bash — so the directive says the same thing the Claude Code one does: hooks
+  # already govern local tools, don't call acp_check per tool (hosted tools such
+  # as web search never fire hooks; acp_check stays available for those).
   # Idempotent: the ACP section is delimited by markers, so re-running
   # replaces only our section and preserves every other instruction.
   if [ "$LOCAL_MODE" = false ]; then
   acp_write_directive "$HOME/.codex/AGENTS.md" "Codex" "~/.acp/bin/codex-acp" codex \
-    '- **Bash commands** are automatically intercepted by the ACP PreToolUse hook. Nothing extra to do.' \
-    '- **Non-Bash tools** (Read, Edit, Write, WebFetch, MCP tools) are NOT hooked in current Codex.' \
-    '  Before calling any non-Bash tool, first call the `acp_check` MCP tool from the `acp` server' \
-    '  with `{tool_name, tool_input}`. Proceed only if the response is `{decision: "allow"}`.' \
-    '  If `deny`, stop and surface the reason to the user.' \
-    '- **Skip `acp_check`** for the meta-tools `acp_check` and `acp_status` themselves.' \
+    '- **Tool calls** (shell, `apply_patch`, MCP tools, other local tools) are intercepted by the ACP' \
+    '  PreToolUse/PostToolUse hooks. Nothing extra to do.' \
+    '- **`acp_check`** (MCP tool from the `acp` server) is for explicit questions only — e.g. the user asks' \
+    '  "am I allowed to do X?" — and for hosted tools that never reach a hook (web search). Do NOT call it' \
+    '  before local tool calls; the hooks already cover them, Bash and non-Bash alike.' \
     '- Do NOT hand-roll `codex -c model_provider=acp`: `[model_providers.acp]` in `~/.codex/config.toml` reads' \
     '  the key from the `ACP_KEY` environment variable, which only the launcher sets. For headless priced runs' \
     '  use `~/.acp/bin/codex-acp exec …`.'
-  echo "  [Codex] AGENTS.md directive installed — Codex will call acp_check before non-Bash tools"
+  echo "  [Codex] AGENTS.md directive installed — hooks govern every tool call, acp_check available on request"
   echo "  ${C_GREEN}✓${C_RESET} [Codex] hooks feature enabled + PreToolUse/PostToolUse hooks + MCP connector wired"
 
   # ── Cost X-ray wrapper (pricing out of the box) ─────────────────────
@@ -2429,7 +2465,8 @@ EOF
 )
     acp_write_launcher qwen-acp qwen ACP_BEARER_TOKEN qwen "$QWEN_LAUNCH"
     acp_write_directive "$HOME/.qwen/QWEN.md" "Qwen Code" "~/.acp/bin/qwen-acp" qwen \
-      '- **Tool calls** are intercepted by the ACP PreToolUse/PostToolUse hooks. Nothing extra to do.' \
+      '- **Tool calls** (shell, `apply_patch`, MCP tools, other local tools) are intercepted by the ACP' \
+    '  PreToolUse/PostToolUse hooks. Nothing extra to do.' \
       '- Do NOT export OPENAI_BASE_URL / OPENAI_API_KEY yourself to reach the proxy — the launcher sets them for one launch.'
     echo "  ${C_GREEN}✓${C_RESET} [Qwen Code] Cost X-ray wrapper installed: qwen-acp (+ ~/.qwen/QWEN.md directive)"
   fi
@@ -2614,7 +2651,7 @@ POLICY
   echo ""
   echo "  ${C_GREEN}ALLOW${C_RESET}  local mode active — no account, nothing leaves your machine"
   echo "  ${C_DIM}Hooks installed for:${C_RESET} $INSTALLED"
-  [ "$HAS_CODEX" = true ] && echo "  ${C_DIM}Codex note: its hooks cover shell commands today; non-Bash tools aren't hooked by Codex yet.${C_RESET}"
+  [ "$HAS_CODEX" = true ] && echo "  ${C_DIM}Codex note: PreToolUse/PostToolUse hooks cover every local tool call, not just shell commands.${C_RESET}"
   echo ""
   echo "  Decisions run on-device from ${C_DIM}~/.acp/policy.json${C_RESET} (edit it — allow / ask / deny)."
   echo "  Every call is logged to ${C_DIM}~/.acp/audit.jsonl${C_RESET}:"
@@ -2633,6 +2670,25 @@ POLICY
 fi
 
 # ── Step 2: Authenticate ──────────────────────────────────────────────
+
+if [ "$UPDATE_MODE" = true ]; then
+  # --update never mints a key. Everything above (govern.mjs, launchers,
+  # hooks, directive blocks) has already been refreshed for every harness
+  # detected on this machine; ~/.acp/credentials is left exactly as it was.
+  if [ ! -f "$CREDS_FILE" ]; then
+    echo ""
+    echo "  ${C_DIM}--update found no existing ~/.acp/credentials — nothing to refresh a key against.${C_RESET}"
+    echo "  Run the installer once without --update first:"
+    echo "  curl -sf https://agenticcontrolplane.com/install.sh | bash"
+    echo ""
+    exit 1
+  fi
+  echo ""
+  echo "  ${C_GREEN}✓${C_RESET} Updated. Hooks installed for: $INSTALLED"
+  echo "  Credentials unchanged (~/.acp/credentials)."
+  echo ""
+  exit 0
+fi
 
 if [ -f "$CREDS_FILE" ]; then
   echo "  Credentials already configured."
@@ -2695,7 +2751,7 @@ DEVICE_INFO="$(node -e '
       const r = await fetch(API + "/device/code", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ client: process.argv[2] || "cli" }),
+        body: JSON.stringify({ client: process.argv[2] || "cli", platform: process.platform, installer: "sh" }),
       });
       if (!r.ok) process.exit(1);
       const d = await r.json();
@@ -2800,7 +2856,7 @@ if [ "$KEY_SEEN" = true ]; then
     # gateway + audit log). Distinguishes "installed and idle" from "hook
     # broken" server-side, and the user's dashboard gets its first row.
     BEACON_SESSION="install-$(date +%s)"
-    printf '{"tool_name":"install.verify","tool_input":{"harness":"%s"},"session_id":"%s","hook_event_name":"PreToolUse"}' \
+    printf '{"tool_name":"install.verify","tool_input":{"harness":"%s","installer":"sh"},"session_id":"%s","hook_event_name":"PreToolUse"}' \
       "$INSTALLED" "$BEACON_SESSION" \
       | env ACP_CLIENT=installer node "$CONFIG_DIR/govern.mjs" >/dev/null 2>&1 || true
     echo "  ${C_GREEN}ALLOW${C_RESET}  install.verify · key valid · first governed call logged"
