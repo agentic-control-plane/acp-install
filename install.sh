@@ -55,6 +55,7 @@ set -e
 
 API_BASE="${ACP_API_BASE:-https://api.agenticcontrolplane.com}"
 DASHBOARD_BASE="${ACP_DASHBOARD_BASE:-https://cloud.agenticcontrolplane.com}"
+SITE_BASE="${ACP_SITE_BASE:-https://agenticcontrolplane.com}"
 CONFIG_DIR="$HOME/.acp"
 CREDS_FILE="$CONFIG_DIR/credentials"
 
@@ -1951,6 +1952,26 @@ exec curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --update "
 ACPUPDATE
   chmod +x "$CONFIG_DIR/bin/acp-update"
 
+  # acp-uninstall — the exit, shipped with the entrance. The script itself
+  # is cached into ~/.acp so removal needs no network and no docs page:
+  # getting out must never depend on us being reachable. The curl is only
+  # the fallback for an install that predates the cached copy.
+  curl -sf --max-time 10 "$SITE_BASE/uninstall.sh" -o "$CONFIG_DIR/uninstall.sh" 2>/dev/null || true
+  if [ -s "$CONFIG_DIR/uninstall.sh" ] && ! grep -q 'Agentic Control Plane' "$CONFIG_DIR/uninstall.sh" 2>/dev/null; then
+    rm -f "$CONFIG_DIR/uninstall.sh"
+  fi
+  cat > "$CONFIG_DIR/bin/acp-uninstall" << 'ACPUNINSTALL'
+#!/bin/sh
+# acp-uninstall — remove ACP from this machine: hook registrations,
+# directive blocks, MCP entries, the PATH line, and ~/.acp itself.
+# Anything you wrote yourself is preserved. --dry-run previews.
+# Docs: agenticcontrolplane.com/trust
+LOCAL="${ACP_HOME:-$HOME}/.acp/uninstall.sh"
+[ -s "$LOCAL" ] && exec bash "$LOCAL" "$@"
+exec curl -sf https://agenticcontrolplane.com/uninstall.sh | bash -s -- "$@"
+ACPUNINSTALL
+  chmod +x "$CONFIG_DIR/bin/acp-uninstall"
+
   # Put ~/.acp/bin on PATH (idempotent; marked line so upgrades don't stack).
   # Shared because either priced launcher (claude-acp, codex-acp) needs it —
   # written here once so a Codex-only machine gets it too, not just Claude.
@@ -3233,6 +3254,13 @@ fi
 if [ "$HAS_QWEN" = true ]; then
   echo "  Then restart Qwen Code (Ctrl+C, then qwen) to activate the hook — headless runs (qwen --prompt) resolve any ask to deny"
 fi
+echo ""
+# The exit, named at the entrance. Someone who cannot see how to leave
+# reads the install as something done TO them; the removal path is part of
+# the pitch, not an admission. Also lists what we wrote, because the
+# alternative is them discovering it later and grepping for our marker.
+echo "  ${C_DIM}What this wrote, and how to undo it: $SITE_BASE/trust"
+echo "  Remove everything, keeping your own config:  acp-uninstall${C_RESET}"
 echo ""
 if [ "${ACP_UNGOVERNED:-false}" != true ]; then
   echo "  If ACP is useful, a star helps others find it: https://github.com/agentic-control-plane/claude-code-acp-plugin"
