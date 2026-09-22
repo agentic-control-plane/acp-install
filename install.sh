@@ -12,7 +12,7 @@ set -e
 # What this script will do on your machine:
 #
 #   1. Detect which AI clients are installed
-#        Claude Code · Cursor · OpenAI Codex CLI · OpenClaw
+#        Claude Code · Cursor · OpenAI Codex CLI · OpenClaw · GitHub Copilot
 #
 #   1b. SHOW YOU THAT LIST and ask which of them to govern, naming the
 #       files each one touches, before writing anything at all. Enter
@@ -24,6 +24,7 @@ set -e
 #        ~/.claude/settings.json      (Claude Code)
 #        ~/.cursor/hooks.json         (Cursor)
 #        ~/.codex/hooks.json          (Codex CLI)
+#        ~/.copilot/hooks/acp.json    (GitHub Copilot — CLI and VS Code agent mode)
 #
 #   4. For Codex specifically:
 #        - Enable [features].codex_hooks = true in ~/.codex/config.toml
@@ -179,6 +180,18 @@ if [ -d "$HOME/.qwen" ] || command -v qwen > /dev/null 2>&1; then
   HAS_QWEN=true
 fi
 
+# GitHub Copilot — the CLI (~/.copilot, `copilot` on PATH) and VS Code's
+# agent mode (the github.copilot-chat extension) read ONE user-level hook
+# directory, ~/.copilot/hooks/, in Claude Code's hook contract. Either
+# presence is enough: the file serves both.
+HAS_COPILOT=false
+if [ -d "$HOME/.copilot" ] || command -v copilot > /dev/null 2>&1; then
+  HAS_COPILOT=true
+fi
+for _vsx in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.vscode-server/extensions"; do
+  if ls -d "$_vsx"/github.copilot-chat-* > /dev/null 2>&1; then HAS_COPILOT=true; fi
+done
+
 # ── Consent: what we found, and what you actually want governed ────────
 #
 # Two people signed up on 2026-09-17, looked at what had just been written
@@ -214,6 +227,9 @@ _offer opencode "$HAS_OPENCODE" "opencode" \
 _offer qwen-code "$HAS_QWEN" "Qwen Code" \
   "~/.qwen/settings.json" \
   "Hook on every tool call; reads Claude Code's hook contract."
+_offer copilot "$HAS_COPILOT" "GitHub Copilot" \
+  "~/.copilot/hooks/acp.json" \
+  "One file for Copilot CLI and VS Code agent mode; reads Claude Code's hook contract. Cloud coding-agent runs need the repo-level copy (see the guide)."
 _offer hermes "$HAS_HERMES" "Hermes Agent" \
   "its pip environment (acp-hermes)" \
   "Installs a Python package into the environment that runs hermes."
@@ -252,6 +268,7 @@ _already_wired() {
     openclaw)    [ -f "$HOME/.openclaw/settings.json" ] && grep -q 'govern' "$HOME/.openclaw/settings.json" 2>/dev/null ;;
     opencode)    [ -f "$HOME/.config/opencode/opencode.json" ] && grep -q 'acp' "$HOME/.config/opencode/opencode.json" 2>/dev/null ;;
     qwen-code)   [ -f "$HOME/.qwen/settings.json" ] && grep -q 'govern' "$HOME/.qwen/settings.json" 2>/dev/null ;;
+    copilot)     [ -f "$HOME/.copilot/hooks/acp.json" ] && grep -q 'govern' "$HOME/.copilot/hooks/acp.json" 2>/dev/null ;;
     hermes)      [ -f "$HOME/.hermes/SOUL.md" ] && grep -q 'acp:begin' "$HOME/.hermes/SOUL.md" 2>/dev/null ;;
     dsh)         [ -f "$DSH_HOME_DIR/settings.yaml" ] && grep -q 'agenticcontrolplane' "$DSH_HOME_DIR/settings.yaml" 2>/dev/null ;;
     pi)          [ -f "$PI_EXT_DIR/acp.ts" ] ;;
@@ -373,6 +390,7 @@ if [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = false ]; then
   if ! _selected openclaw;    then HAS_OPENCLAW=false; fi
   if ! _selected opencode;    then HAS_OPENCODE=false; fi
   if ! _selected qwen-code;   then HAS_QWEN=false; fi
+  if ! _selected copilot;     then HAS_COPILOT=false; fi
   if ! _selected hermes;      then HAS_HERMES=false; fi
   if ! _selected dsh;         then HAS_DSH=false; fi
   if ! _selected pi;          then HAS_PI=false; fi
@@ -401,6 +419,7 @@ elif [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = true ]; then
         openclaw)    HAS_OPENCLAW=false ;;
         opencode)    HAS_OPENCODE=false ;;
         qwen-code)   HAS_QWEN=false ;;
+        copilot)     HAS_COPILOT=false ;;
         hermes)      HAS_HERMES=false ;;
         dsh)         HAS_DSH=false ;;
         pi)          HAS_PI=false ;;
@@ -679,7 +698,7 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
-if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ] && [ "$HAS_QWEN" = false ]; then
+if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ] && [ "$HAS_QWEN" = false ] && [ "$HAS_COPILOT" = false ]; then
   # Hermes-only / dsh-only / pi-only box: the plugin paths above already
   # handled them — success, not "nothing detected".
   if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ] || [ "$HAS_MUSE" = true ] || [ "$HAS_GROK" = true ]; then
@@ -697,7 +716,7 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
     exit 0
   fi
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
-  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw, opencode, pi, Prime Agent, Muse Code, Grok Build, Antigravity, Hermes Agent, DeepSeek Harness"
+  echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, GitHub Copilot, OpenClaw, opencode, Qwen Code, pi, Prime Agent, Muse Code, Grok Build, Antigravity, Hermes Agent, DeepSeek Harness"
   echo "  Hermes Agent? It has a native pip plugin instead:"
   echo "    pip install acp-hermes && hermes plugins enable acp && acp-hermes login"
   echo "  Guide: https://agenticcontrolplane.com/integrations/hermes"
@@ -732,6 +751,9 @@ fi
 if [ "$HAS_QWEN" = true ]; then
   if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + Qwen Code"; else TARGETS="Qwen Code"; fi
 fi
+if [ "$HAS_COPILOT" = true ]; then
+  if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + GitHub Copilot"; else TARGETS="GitHub Copilot"; fi
+fi
 
 # Machine-readable form of the same detection, sent with the device-code
 # request so the minted key records WHICH harness it was wired for. The
@@ -747,6 +769,7 @@ _add_slug() { if [ -n "$CLIENT_SLUG" ]; then CLIENT_SLUG="$CLIENT_SLUG+$1"; else
 [ "$HAS_OPENCLAW" = true ] && _add_slug "openclaw"
 [ "$HAS_OPENCODE" = true ] && _add_slug "opencode"
 [ "$HAS_QWEN" = true ] && _add_slug "qwen-code"
+[ "$HAS_COPILOT" = true ] && _add_slug "copilot"
 [ -n "$CLIENT_SLUG" ] || CLIENT_SLUG="cli"
 
 echo ""
@@ -2364,6 +2387,41 @@ if [ "$HAS_QWEN" = true ]; then
   echo ""
 fi
 
+# GitHub Copilot — Copilot CLI and VS Code's agent mode read the same
+# user-level directory, ~/.copilot/hooks/*.json, so one file covers both.
+# PascalCase event names select Copilot CLI's "VS Code compatible" payload:
+# snake_case fields with tool_name already in Claude Code's vocabulary, which
+# is the contract govern.mjs speaks. Entries are FLAT — no {matcher, hooks:[…]}
+# nesting; that is the Claude/Cursor/Qwen shape and Copilot ignores it.
+# timeoutSec is the CLI's field and timeout is VS Code's, so both are
+# written and each reader takes its own. ACP_HARNESS=copilot makes
+# govern.mjs emit every verdict in both output shapes and canonicalize the
+# tool ids VS Code sends. The file is ours in full (acp.json, beside any
+# hooks you wrote), so it is written whole, not merged, and the uninstaller
+# removes it by name. Pre + Post only: Copilot's SessionStart carries none
+# of the fields the Claude Code attestation reads.
+if [ "$HAS_COPILOT" = true ]; then
+  echo "  [GitHub Copilot] Setting up governance hooks..."
+  COPILOT_HOOKS_DIR="$HOME/.copilot/hooks"
+  mkdir -p "$COPILOT_HOOKS_DIR"
+  node -e "
+    const fs = require('fs');
+    const p = process.argv[1];
+    const cmd = 'env ACP_CLIENT=copilot ACP_HARNESS=copilot node \$HOME/.acp/govern.mjs';
+    const cfg = { version: 1, hooks: {} };
+    for (const ev of ['PreToolUse', 'PostToolUse']) {
+      cfg.hooks[ev] = [{ type: 'command', command: cmd, timeout: 5, timeoutSec: 5 }];
+    }
+    fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
+  " "$COPILOT_HOOKS_DIR/acp.json"
+  if grep -qs '"disableAllHooks"[[:space:]]*:[[:space:]]*true' "$HOME/.copilot/settings.json" 2>/dev/null; then
+    echo "  ${C_DIM}[GitHub Copilot] warning: disableAllHooks is true in ~/.copilot/settings.json — hooks (including ACP) will not run until it is removed.${C_RESET}"
+  fi
+  echo "  ${C_GREEN}✓${C_RESET} [GitHub Copilot] PreToolUse + PostToolUse hooks registered in ~/.copilot/hooks/acp.json (Copilot CLI + VS Code agent mode)"
+  INSTALLED="${INSTALLED:+$INSTALLED, }GitHub Copilot"
+  echo ""
+fi
+
 if [ "$HAS_CURSOR" = true ]; then
   echo "  [Cursor] Setting up governance hooks..."
 
@@ -3253,6 +3311,10 @@ if [ "$HAS_OPENCLAW" = true ]; then
 fi
 if [ "$HAS_QWEN" = true ]; then
   echo "  Then restart Qwen Code (Ctrl+C, then qwen) to activate the hook — headless runs (qwen --prompt) resolve any ask to deny"
+fi
+if [ "$HAS_COPILOT" = true ]; then
+  echo "  Then restart Copilot CLI (and reload VS Code) to activate the hook — hook files are read at startup."
+  echo "  Cloud coding-agent runs read only the repo's .github/hooks/: https://agenticcontrolplane.com/integrations/copilot#repo"
 fi
 echo ""
 # The exit, named at the entrance. Someone who cannot see how to leave
