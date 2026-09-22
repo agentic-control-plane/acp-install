@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Auditable mirror of the Agentic Control Plane installer + local decision engine.",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test test/"
   },
   "license": "MIT"
 }

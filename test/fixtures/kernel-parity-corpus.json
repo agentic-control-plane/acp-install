@@ -1,0 +1,264 @@
+{
+  "corpus": "acp-kernel-parity",
+  "version": 1,
+  "canonicalHome": "agentic-control-plane/acp-install:test/fixtures/kernel-parity-corpus.json",
+  "purpose": "One shared table of (tool, command) -> expected classification prefix and expected hardline-floor verdict, run against EVERY copy of the decision kernel. The August 2026 failure was not a bad algorithm, it was one-way drift: the gateway fixed this class in gatewaystack-connect#516 in July and the local copies stayed broken for about four weeks because nothing compared them. This corpus is the comparison.",
+  "surfaces": [
+    "acp-install:decide.mjs",
+    "claude-code-acp-plugin:bin/decide.mjs",
+    "gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"
+  ],
+  "assertions": {
+    "keyPrefix": "classifyTool(tool, input) MUST return this string or a more specific key beneath it (dot-separated). This is the #18 invariant: the classified key follows the most-privileged segment, not the first one.",
+    "hardline": "true means the hardline floor MUST deny this regardless of configured policy. This is the #19 invariant: wrapper shapes do not get you under the floor.",
+    "policyDeny": "true means: with policy {default: allow, rules: {<keyPrefix>: deny}}, the decision MUST be deny. Local surfaces assert this via decide(); the gateway's equivalent needs tenant context, so v1 asserts keyPrefix and hardline there and leaves the policy walk to the gateway's own suite."
+  },
+  "knownDivergencesSchema": "Each entry names the surfaces and the specific assertions that do not meet the expectation, with a verified reason. Divergences are per-assertion and per-surface on purpose: skipping a whole case would hide a future regression in the half that currently works. A NEW divergence fails CI; FIXING one also fails CI until the count is lowered. Neither can be quietly forgotten.",
+  "tokens": {
+    "RM": ["r", "m"],
+    "note": "Destructive binaries are stored as fragment arrays and joined by the loader. Writing the bare literal into a file is subject to response filtering and redaction on governed writes, which would silently corrupt the fixture. Do not inline them."
+  },
+  "cases": [
+    {
+      "id": "18-gcloud-direct",
+      "tool": "Bash",
+      "command": "gcloud sql instances delete x --quiet",
+      "expect": { "keyPrefix": "Bash.gcloud", "hardline": false, "policyDeny": true },
+      "issue": "acp-install#18",
+      "why": "Baseline: the plain spelling must hit the policy rule."
+    },
+    {
+      "id": "18-gcloud-compound-prefix",
+      "tool": "Bash",
+      "command": "which gcloud && gcloud sql instances delete x --quiet",
+      "expect": { "keyPrefix": "Bash.gcloud", "hardline": false, "policyDeny": true },
+      "issue": "acp-install#18",
+      "why": "THE original bypass. Classifying by the FIRST segment yields Bash.which and allows the delete."
+    },
+    {
+      "id": "18-rm-direct",
+      "tool": "Bash",
+      "command": "{{RM}} -rf /tmp/demo",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": false, "policyDeny": true },
+      "issue": "acp-install#18",
+      "why": "Baseline for the policy rule; /tmp is not a floor path."
+    },
+    {
+      "id": "18-rm-compound-prefix",
+      "tool": "Bash",
+      "command": "true && {{RM}} -rf /tmp/demo",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": false, "policyDeny": true },
+      "issue": "acp-install#18",
+      "why": "Same bypass with a no-op prefix instead of a lookup."
+    },
+    {
+      "id": "19-floor-root",
+      "tool": "Bash",
+      "command": "{{RM}} -rf /",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "issue": "acp-install#19",
+      "why": "The floor itself."
+    },
+    {
+      "id": "19-floor-root-compound",
+      "tool": "Bash",
+      "command": "true && {{RM}} -rf /",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "issue": "acp-install#19",
+      "why": "Floor must scan every segment, not just the first."
+    },
+    {
+      "id": "19-wrapper-sudo-u",
+      "tool": "Bash",
+      "command": "sudo -u root {{RM}} -rf /",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "issue": "acp-install#19",
+      "why": "Wrapper with a POSITIONAL operand. The original parser ate flags but not the operand, then treated 'root' as the binary."
+    },
+    {
+      "id": "19-wrapper-timeout",
+      "tool": "Bash",
+      "command": "timeout 5 {{RM}} -rf ~/Documents",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": false, "policyDeny": true },
+      "issue": "acp-install#19",
+      "why": "timeout takes a bare number operand. Home-dir recursive delete is policy territory here, not the root floor."
+    },
+    {
+      "id": "19-wrapper-nice",
+      "tool": "Bash",
+      "command": "nice -n 10 {{RM}} -rf /",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "issue": "acp-install#19",
+      "why": "Option-argument form: -n consumes 10, the binary is two tokens further on."
+    },
+    {
+      "id": "19-wrapper-git-c-force-push",
+      "tool": "Bash",
+      "command": "git -C . push --force origin main",
+      "expect": { "keyPrefix": "Bash.git.push", "hardline": true },
+      "issue": "acp-install#19",
+      "why": "An ORDINARY shape, not adversarial. firstSubcommand used to return the -C operand and build the malformed key Bash.git..",
+      "knownDivergences": [
+        {
+          "assertions": ["keyPrefix", "hardline"],
+          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
+          "detail": "Two deliberate differences, both verified 2026-09-22. (1) The gateway keys git coarsely as Bash.git and distinguishes push variants by hashing params, not by key depth — see approvalGrantCanonical(\"Bash.git\", …) at apps/tenant-gateway/src/govern/approvals.test.ts:474. (2) The gateway puts force-push at ask level via detectDestructive, not at hardline, so detectHardline returns null. Neither is a miss; both mean a policy written against one surface does not behave identically on the other.",
+          "direction": "gateway is coarser on the key and lower-severity on the floor",
+          "issue": "davidcrowe/gatewaystack-connect#1335"
+        }
+      ]
+    },
+    {
+      "id": "19-subshell",
+      "tool": "Bash",
+      "command": "( {{RM}} -rf / )",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "issue": "acp-install#19",
+      "why": "Parenthesised subshell."
+    },
+    {
+      "id": "19-inner-shell-fish",
+      "tool": "Bash",
+      "command": "fish -c '{{RM}} -rf /'",
+      "expect": { "keyPrefix": "Bash.fish", "hardline": true },
+      "issue": "acp-install#19",
+      "why": "Inner shell string. The outer binary is legitimately fish; the floor must still read inside -c.",
+      "knownDivergences": [
+        {
+          "assertions": ["hardline"],
+          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
+          "detail": "VERIFIED 2026-09-22 on the gateway: detectHardline returns null for fish, csh and tcsh, while bash and zsh are denied. Cause: collectExecutedLiterals in riskClassifier.ts matches (ba|z|da|k)?sh, powershell and pwsh, and does not include fish, csh or tcsh. NOT a silent allow — detectDestructive still fires with 'recursive delete outside the working directory: /', so this is a SEVERITY DOWNGRADE from an unconditional hardline deny to an ask that policy participates in. Same launder class as the 2026-09-06 pentest fix for sh -c, which enumerated shells and missed these three.",
+          "direction": "gateway is WEAKER than the local kernel here, and the gateway is the enforcing surface for every hook 0.12+ install",
+          "issue": "davidcrowe/gatewaystack-connect#1333"
+        }
+      ]
+    },
+    {
+      "id": "extra-inner-shell-bash-c",
+      "tool": "Bash",
+      "command": "bash -c '{{RM}} -rf /'",
+      "expect": { "keyPrefix": "Bash.bash", "hardline": true },
+      "why": "Same shape via bash. Regression guard, not a reported bug."
+    },
+    {
+      "id": "extra-inner-shell-sh-c",
+      "tool": "Bash",
+      "command": "sh -c \"{{RM}} -rf /\"",
+      "expect": { "keyPrefix": "Bash.sh", "hardline": true },
+      "why": "Double-quoted inner shell string."
+    },
+    {
+      "id": "extra-env-prefix",
+      "tool": "Bash",
+      "command": "env FOO=1 {{RM}} -rf /",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "why": "env with an assignment operand before the binary."
+    },
+    {
+      "id": "extra-bare-assignment-prefix",
+      "tool": "Bash",
+      "command": "FOO=1 {{RM}} -rf /",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "why": "Shell assignment prefix with no env binary at all."
+    },
+    {
+      "id": "extra-path-qualified",
+      "tool": "Bash",
+      "command": "/bin/{{RM}} -rf /",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": true },
+      "why": "Absolute path spelling must canonicalise to the same binary."
+    },
+    {
+      "id": "extra-pipeline-tail",
+      "tool": "Bash",
+      "command": "echo /tmp/x | xargs {{RM}} -rf",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": false },
+      "why": "The kernel reaches THROUGH xargs to the real binary, so a policy rule on the delete binary still catches it. Authored expecting Bash.xargs; the local kernel was more conservative and better.",
+      "knownDivergences": [
+        {
+          "assertions": ["keyPrefix"],
+          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
+          "detail": "The gateway keeps the key as Bash.xargs and attaches a high risk tier to the xargs-plus-delete combination instead of reclassifying — a deliberate design, documented at riskClassifier.ts:891-894 as deletion-by-indirection (#304, found via Hermes). Not a miss. The consequence is still real: a user rule on the delete binary catches this locally and does not match on the gateway, which reaches it through the risk-tier path instead.",
+          "direction": "same risk, different representation; policy rules are not portable between the two",
+          "issue": "davidcrowe/gatewaystack-connect#1335"
+        }
+      ]
+    },
+    {
+      "id": "extra-git-push-plain",
+      "tool": "Bash",
+      "command": "git push origin main",
+      "expect": { "keyPrefix": "Bash.git.push", "hardline": false },
+      "why": "Negative case: an ordinary push must not trip the force-push floor.",
+      "knownDivergences": [
+        {
+          "assertions": ["keyPrefix"],
+          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
+          "detail": "The gateway keys git as Bash.git without subcommand depth; the local kernel gives Bash.git.push and asserts that granularity in test/decide.test.mjs. A rule written as Bash.git.push matches locally and never matches on the gateway.",
+          "direction": "gateway key is coarser; rules are not portable",
+          "issue": "davidcrowe/gatewaystack-connect#1335"
+        }
+      ]
+    },
+    {
+      "id": "extra-git-push-force-with-lease",
+      "tool": "Bash",
+      "command": "git push --force-with-lease origin main",
+      "expect": { "keyPrefix": "Bash.git.push", "hardline": false },
+      "why": "Negative case: --force-with-lease is the safe spelling, recommended over --force, and must stay usable.",
+      "knownDivergences": [
+        {
+          "assertions": ["hardline"],
+          "surfaces": ["acp-install:decide.mjs", "claude-code-acp-plugin:bin/decide.mjs"],
+          "detail": "The local kernel HARD-DENIES this. decide.mjs gitForcePushFloor includes args.includes(\"--force-with-lease\") in its force test, so the safe spelling trips the hardline floor, which policy cannot override. The gateway does the opposite and returns null for this exact command, asserted by its own test at apps/tenant-gateway/src/govern/destructiveFloor.test.ts:26. Same command: allowed server-side, hard-denied locally.",
+          "direction": "local is MORE restrictive than the gateway, and blocks the operation Git documentation recommends over --force",
+          "issue": "davidcrowe/gatewaystack-connect#1335"
+        },
+        {
+          "assertions": ["keyPrefix"],
+          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
+          "detail": "Gateway keys git as Bash.git without subcommand depth. Same cause as extra-git-push-plain.",
+          "direction": "gateway key is coarser; rules are not portable",
+          "issue": "davidcrowe/gatewaystack-connect#1335"
+        }
+      ]
+    },
+    {
+      "id": "extra-grep-mentions-destructive-text",
+      "tool": "Bash",
+      "command": "grep -rn '{{RM}} -rf /' src/",
+      "expect": { "keyPrefix": "Bash.grep", "hardline": false },
+      "why": "Negative case: a destructive string appearing as DATA inside a search must not deny. This is the false-positive direction, and it is the one that makes people uninstall."
+    },
+    {
+      "id": "extra-echo-mentions-destructive-text",
+      "tool": "Bash",
+      "command": "echo \"{{RM}} -rf /\"",
+      "expect": { "keyPrefix": "Bash.echo", "hardline": false },
+      "why": "Negative case: quoted data, not execution."
+    },
+    {
+      "id": "extra-empty-command",
+      "tool": "Bash",
+      "command": "",
+      "expect": { "keyPrefix": "Bash", "hardline": false },
+      "why": "Degenerate input must not throw and must not silently become a wrong key."
+    },
+    {
+      "id": "extra-unparseable",
+      "tool": "Bash",
+      "command": "$(",
+      "expect": { "keyPrefix": "Bash.unknown", "hardline": false },
+      "why": "Unparseable but non-empty must land on the explicit unknown key, never on a junk key. The repo states this contract in test/decide.test.mjs: 'unparseable non-empty commands are Bash.unknown, never a wrong-segment key'.",
+      "knownDivergences": [
+        {
+          "assertions": ["keyPrefix"],
+          "surfaces": ["acp-install:decide.mjs", "claude-code-acp-plugin:bin/decide.mjs"],
+          "detail": "Returns the junk key Bash.$ instead of Bash.unknown. The existing contract test only covers ') ) )', which does land on Bash.unknown, so the stated contract is stronger than the code delivers. Low severity: a junk key falls through the candidate walk to Bash and then to the default, so the call is still governable — but it is not the explicit unknown key a policy can target.",
+          "direction": "neither more nor less restrictive; a key nobody can write a rule against",
+          "issue": "davidcrowe/gatewaystack-connect#1335"
+        }
+      ]
+    }
+  ]
+}
