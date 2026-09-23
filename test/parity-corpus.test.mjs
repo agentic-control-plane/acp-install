@@ -17,7 +17,7 @@ const SURFACE = "acp-install:decide.mjs";
 const { cases, fingerprint, version } = loadCorpus();
 
 // Recorded divergences on THIS surface. Drive it to zero.
-const EXPECTED_DIVERGENCES = 2;
+const EXPECTED_DIVERGENCES = 0;
 
 test("corpus loads, is non-trivial, and its fingerprint is stable", () => {
   assert.equal(version, 1);
@@ -25,7 +25,7 @@ test("corpus loads, is non-trivial, and its fingerprint is stable", () => {
   // If this fails, the case table changed. That is allowed — update the value
   // here AND in every other surface that vendors the corpus, in the same
   // change, or the copies have drifted.
-  assert.equal(fingerprint, "1dceec2ee129bee3");
+  assert.equal(fingerprint, "b1c2dd8b502cc0aa");
 });
 
 const skipFor = (c, assertion) => {

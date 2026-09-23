@@ -26,12 +26,6 @@ const RM = "r" + "m";
 const push = (...rest) => ["git", "push", ...rest].join(" ");
 
 const FLOOR_DENY = [
-  // force-push to main — every natural phrasing
-  push("--force", "origin", "main"),
-  push("origin", "main", "--force"),      // flags after the refspec
-  push("-f", "origin", "main"),           // short flag
-  push("origin", "+main"),                // + refspec force
-  push("--force-with-lease", "origin", "master"),
   // recursive force-delete — combined, split, long, trailing slash, sudo
   [RM, "-rf", "/"].join(" "),
   [RM, "-rf", "~"].join(" "),
@@ -50,7 +44,6 @@ const FLOOR_DENY = [
   ["eval", RM, "-rf", "~"].join(" "),             // eval, bare
   ['eval "', RM, '-rf ~"'].join(" "),             // eval, quoted
   ['bash -c "echo ok &&', RM, '-rf ~"'].join(" "),// compound inside -c
-  ["bash", "-c", `"${push("-f", "origin", "main")}"`].join(" "),
   // $HOME spellings
   [RM, "-rf", "$HOME"].join(" "),
   [RM, "-rf", "${HOME}"].join(" "),
@@ -59,10 +52,14 @@ const FLOOR_DENY = [
   ["timeout", "5", RM, "-rf", "~"].join(" "),         // timeout's DURATION operand
   ["nice", "-n", "10", RM, "-rf", "/"].join(" "),     // nice's -n N operand
   ["nohup", "timeout", "2", RM, "-rf", "/"].join(" "),// stacked wrappers
-  "git -C . push --force origin main",                // option-argument before subcommand
   ["(", RM, "-rf", "/", ")"].join(" "),               // subshell
   ["{", RM, "-rf", "/;", "}"].join(" "),              // brace group
-  ["fish -c '", RM, "-rf /'"].join(" "),              // fish joins SHELL_BINS
+  // any shell's -c string (#1333: a shape, not a list)
+  ["fish -c '", RM, "-rf /'"].join(" "),
+  ["csh -c '", RM, "-rf /'"].join(" "),
+  ["tcsh -c '", RM, "-rf /'"].join(" "),
+  ["ash -c '", RM, "-rf /'"].join(" "),
+  ["mksh -c '", RM, "-rf /'"].join(" "),
   ["echo ok $(", RM, "-rf ~ )"].join(" "),            // command substitution
   [RM, "-rf", "/."].join(" "),                        // /. spelling of root
 ];
@@ -91,7 +88,33 @@ const FLOOR_ALLOW = [
   "nice -n 10 make build",
   "git -C /repo status",
   "npm run lint && npm test",             // compound, but benign
+  "ssh -c aes128-ctr host uptime",        // ssh's -c is a cipher, not a shell
 ];
+
+// ── Force-push: an ASK on every surface, never hardline (#1335, decided
+//    2026-09-23). Same verdict here as on the gateway. ──────────────────────
+const FORCE_PUSH_ASK = [
+  push("--force", "origin", "main"),
+  push("origin", "main", "--force"),      // flags after the refspec
+  push("-f", "origin", "main"),           // short flag
+  push("origin", "+main"),                // + refspec force, no destination
+  push("origin", "+main:main"),
+  "git -C . push --force origin main",    // option-argument before subcommand
+  ["bash", "-c", `"${push("-f", "origin", "main")}"`].join(" "),
+];
+
+for (const cmd of FORCE_PUSH_ASK) {
+  test(`force-push asks, not hardline: ${cmd}`, () => {
+    assert.equal(hardlineFloor(...bash(cmd)), null);
+    assert.equal(decide(...bash(cmd), { default: "allow", rules: {} }).decision, "ask");
+  });
+}
+
+test("--force-with-lease is neither hardline nor an ask", () => {
+  const cmd = push("--force-with-lease", "origin", "master");
+  assert.equal(hardlineFloor(...bash(cmd)), null);
+  assert.equal(decide(...bash(cmd), { default: "allow", rules: {} }).decision, "allow");
+});
 
 for (const cmd of FLOOR_ALLOW) {
   test(`floor allows: ${cmd}`, () => {
@@ -132,6 +155,7 @@ test("compound commands classify by most-privileged segment; every segment is po
 
 test("unparseable non-empty commands are Bash.unknown, never a wrong-segment key", () => {
   assert.equal(classifyTool(...bash(") ) )")), "Bash.unknown"); // still governable; falls back to Bash in the walk
+  assert.equal(classifyTool(...bash("$(")), "Bash.unknown");   // not Bash.$ (#1335)
   assert.equal(classifyTool(...bash("")), "Bash");
 });
 
@@ -151,7 +175,7 @@ test("default policy ships no dead rules", () => {
 // ── decide(): policy walk + precedence. ─────────────────────────────────────
 test("decide walks most-specific → least and honors default", () => {
   const policy = { default: "allow", rules: { "Bash.git.push": "deny", "Bash.curl": "ask" } };
-  assert.equal(decide(...bash("git push origin main --force"), policy).decision, "deny"); // floor first
+  assert.equal(decide(...bash("git push origin main --force"), policy).decision, "deny"); // policy Bash.git.push (force-push itself only asks)
   assert.equal(decide(...bash("git push origin feature"), policy).decision, "deny");      // policy Bash.git.push
   assert.equal(decide(...bash("curl https://api.github.com"), policy).decision, "ask");   // walk to Bash.curl
   assert.equal(decide(...bash("echo hi"), policy).decision, "allow");                     // default

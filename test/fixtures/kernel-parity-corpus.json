@@ -95,18 +95,9 @@
       "id": "19-wrapper-git-c-force-push",
       "tool": "Bash",
       "command": "git -C . push --force origin main",
-      "expect": { "keyPrefix": "Bash.git.push", "hardline": true },
+      "expect": { "keyPrefix": "Bash.git.push", "hardline": false },
       "issue": "acp-install#19",
-      "why": "An ORDINARY shape, not adversarial. firstSubcommand used to return the -C operand and build the malformed key Bash.git..",
-      "knownDivergences": [
-        {
-          "assertions": ["keyPrefix", "hardline"],
-          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
-          "detail": "Two deliberate differences, both verified 2026-09-22. (1) The gateway keys git coarsely as Bash.git and distinguishes push variants by hashing params, not by key depth — see approvalGrantCanonical(\"Bash.git\", …) at apps/tenant-gateway/src/govern/approvals.test.ts:474. (2) The gateway puts force-push at ask level via detectDestructive, not at hardline, so detectHardline returns null. Neither is a miss; both mean a policy written against one surface does not behave identically on the other.",
-          "direction": "gateway is coarser on the key and lower-severity on the floor",
-          "issue": "davidcrowe/gatewaystack-connect#1335"
-        }
-      ]
+      "why": "An ORDINARY shape, not adversarial. firstSubcommand used to return the -C operand and build the malformed key Bash.git.. Force-push is an ask on every surface (destructive floor), never hardline: decided 2026-09-23, gatewaystack-connect#1335."
     },
     {
       "id": "19-subshell",
@@ -122,16 +113,7 @@
       "command": "fish -c '{{RM}} -rf /'",
       "expect": { "keyPrefix": "Bash.fish", "hardline": true },
       "issue": "acp-install#19",
-      "why": "Inner shell string. The outer binary is legitimately fish; the floor must still read inside -c.",
-      "knownDivergences": [
-        {
-          "assertions": ["hardline"],
-          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
-          "detail": "VERIFIED 2026-09-22 on the gateway: detectHardline returns null for fish, csh and tcsh, while bash and zsh are denied. Cause: collectExecutedLiterals in riskClassifier.ts matches (ba|z|da|k)?sh, powershell and pwsh, and does not include fish, csh or tcsh. NOT a silent allow — detectDestructive still fires with 'recursive delete outside the working directory: /', so this is a SEVERITY DOWNGRADE from an unconditional hardline deny to an ask that policy participates in. Same launder class as the 2026-09-06 pentest fix for sh -c, which enumerated shells and missed these three.",
-          "direction": "gateway is WEAKER than the local kernel here, and the gateway is the enforcing surface for every hook 0.12+ install",
-          "issue": "davidcrowe/gatewaystack-connect#1333"
-        }
-      ]
+      "why": "Inner shell string. The outer binary is legitimately fish; the floor must still read inside -c."
     },
     {
       "id": "extra-inner-shell-bash-c",
@@ -173,55 +155,21 @@
       "tool": "Bash",
       "command": "echo /tmp/x | xargs {{RM}} -rf",
       "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": false },
-      "why": "The kernel reaches THROUGH xargs to the real binary, so a policy rule on the delete binary still catches it. Authored expecting Bash.xargs; the local kernel was more conservative and better.",
-      "knownDivergences": [
-        {
-          "assertions": ["keyPrefix"],
-          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
-          "detail": "The gateway keeps the key as Bash.xargs and attaches a high risk tier to the xargs-plus-delete combination instead of reclassifying — a deliberate design, documented at riskClassifier.ts:891-894 as deletion-by-indirection (#304, found via Hermes). Not a miss. The consequence is still real: a user rule on the delete binary catches this locally and does not match on the gateway, which reaches it through the risk-tier path instead.",
-          "direction": "same risk, different representation; policy rules are not portable between the two",
-          "issue": "davidcrowe/gatewaystack-connect#1335"
-        }
-      ]
+      "why": "The kernel reaches THROUGH xargs to the real binary, so a policy rule on the delete binary still catches it. Authored expecting Bash.xargs; the local kernel was more conservative and better."
     },
     {
       "id": "extra-git-push-plain",
       "tool": "Bash",
       "command": "git push origin main",
       "expect": { "keyPrefix": "Bash.git.push", "hardline": false },
-      "why": "Negative case: an ordinary push must not trip the force-push floor.",
-      "knownDivergences": [
-        {
-          "assertions": ["keyPrefix"],
-          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
-          "detail": "The gateway keys git as Bash.git without subcommand depth; the local kernel gives Bash.git.push and asserts that granularity in test/decide.test.mjs. A rule written as Bash.git.push matches locally and never matches on the gateway.",
-          "direction": "gateway key is coarser; rules are not portable",
-          "issue": "davidcrowe/gatewaystack-connect#1335"
-        }
-      ]
+      "why": "Negative case: an ordinary push must not trip the force-push floor."
     },
     {
       "id": "extra-git-push-force-with-lease",
       "tool": "Bash",
       "command": "git push --force-with-lease origin main",
       "expect": { "keyPrefix": "Bash.git.push", "hardline": false },
-      "why": "Negative case: --force-with-lease is the safe spelling, recommended over --force, and must stay usable.",
-      "knownDivergences": [
-        {
-          "assertions": ["hardline"],
-          "surfaces": ["acp-install:decide.mjs", "claude-code-acp-plugin:bin/decide.mjs"],
-          "detail": "The local kernel HARD-DENIES this. decide.mjs gitForcePushFloor includes args.includes(\"--force-with-lease\") in its force test, so the safe spelling trips the hardline floor, which policy cannot override. The gateway does the opposite and returns null for this exact command, asserted by its own test at apps/tenant-gateway/src/govern/destructiveFloor.test.ts:26. Same command: allowed server-side, hard-denied locally.",
-          "direction": "local is MORE restrictive than the gateway, and blocks the operation Git documentation recommends over --force",
-          "issue": "davidcrowe/gatewaystack-connect#1335"
-        },
-        {
-          "assertions": ["keyPrefix"],
-          "surfaces": ["gatewaystack-connect:apps/tenant-gateway/src/govern/hookGovernance.ts"],
-          "detail": "Gateway keys git as Bash.git without subcommand depth. Same cause as extra-git-push-plain.",
-          "direction": "gateway key is coarser; rules are not portable",
-          "issue": "davidcrowe/gatewaystack-connect#1335"
-        }
-      ]
+      "why": "Negative case: --force-with-lease is the safe spelling, recommended over --force, and must stay usable. --force-with-lease is the spelling Git recommends; it is never hardline (#1335)."
     },
     {
       "id": "extra-grep-mentions-destructive-text",
@@ -249,16 +197,47 @@
       "tool": "Bash",
       "command": "$(",
       "expect": { "keyPrefix": "Bash.unknown", "hardline": false },
-      "why": "Unparseable but non-empty must land on the explicit unknown key, never on a junk key. The repo states this contract in test/decide.test.mjs: 'unparseable non-empty commands are Bash.unknown, never a wrong-segment key'.",
-      "knownDivergences": [
-        {
-          "assertions": ["keyPrefix"],
-          "surfaces": ["acp-install:decide.mjs", "claude-code-acp-plugin:bin/decide.mjs"],
-          "detail": "Returns the junk key Bash.$ instead of Bash.unknown. The existing contract test only covers ') ) )', which does land on Bash.unknown, so the stated contract is stronger than the code delivers. Low severity: a junk key falls through the candidate walk to Bash and then to the default, so the call is still governable — but it is not the explicit unknown key a policy can target.",
-          "direction": "neither more nor less restrictive; a key nobody can write a rule against",
-          "issue": "davidcrowe/gatewaystack-connect#1335"
-        }
-      ]
+      "why": "Unparseable but non-empty must land on the explicit unknown key, never on a junk key. The repo states this contract in test/decide.test.mjs: 'unparseable non-empty commands are Bash.unknown, never a wrong-segment key'."
+    },
+    {
+      "id": "extra-inner-shell-csh",
+      "tool": "Bash",
+      "command": "csh -c '{{RM}} -rf /'",
+      "expect": { "keyPrefix": "Bash.csh", "hardline": true },
+      "issue": "davidcrowe/gatewaystack-connect#1333",
+      "why": "Shell names are a shape, not a list: csh was missing from the gateway enumeration."
+    },
+    {
+      "id": "extra-inner-shell-tcsh",
+      "tool": "Bash",
+      "command": "tcsh -c '{{RM}} -rf /'",
+      "expect": { "keyPrefix": "Bash.tcsh", "hardline": true },
+      "issue": "davidcrowe/gatewaystack-connect#1333",
+      "why": "As csh."
+    },
+    {
+      "id": "extra-inner-shell-ash",
+      "tool": "Bash",
+      "command": "ash -c '{{RM}} -rf /'",
+      "expect": { "keyPrefix": "Bash.ash", "hardline": true },
+      "issue": "davidcrowe/gatewaystack-connect#1333",
+      "why": "A shell no surface listed before 2026-09-23; the shape rule has to cover it."
+    },
+    {
+      "id": "extra-ssh-cipher-not-shell",
+      "tool": "Bash",
+      "command": "ssh -c aes128-ctr host uptime",
+      "expect": { "keyPrefix": "Bash.ssh", "hardline": false },
+      "issue": "davidcrowe/gatewaystack-connect#1333",
+      "why": "ssh ends in sh but its -c takes a cipher. The shape rule must exclude it."
+    },
+    {
+      "id": "extra-xargs-flags",
+      "tool": "Bash",
+      "command": "ls | xargs -I {} {{RM}} {}",
+      "expect": { "keyPrefix": "Bash.{{RM}}", "hardline": false },
+      "issue": "davidcrowe/gatewaystack-connect#1335",
+      "why": "xargs value flags consume their operand; the key is the command xargs runs."
     }
   ]
 }
