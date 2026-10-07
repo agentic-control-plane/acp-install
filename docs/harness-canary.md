@@ -188,3 +188,31 @@ cd "$(mktemp -d)" && npm init -y >/dev/null && npm i @agenticcontrolplane/govern
 
 pip install acp-governance && ACP_CANARY_KEY=gsk_... python scripts/canary-sdk-governance-py.py
 ```
+
+## Triage of the first full run (37692378153, 2026-10-07)
+
+What each red leg actually was, and what changed in the canary. Rows not
+listed here (codex, sdk-crewai, sdk-governance-py, sdk-governance-js,
+sdk-pydantic-ai) were green.
+
+| Leg | Actual error | Class | Canary change |
+|---|---|---|---|
+| `dsh` | `npm i -g deepseek-harness` installed an unrelated package; no `dsh` binary. | wrong package name | `@deepseek-ai/dsh` (verified with `npm view`). |
+| `pi` | Installer: "No supported AI clients detected". `install.sh` detects pi by `~/.pi/agent` (or `pi` on PATH **and** `~/.pi`); a fresh npm install creates neither. | canary env | `mkdir -p ~/.pi/agent` after the install (same trick as muse). |
+| `prime-agent` | `prime-agent@latest` is 404 on npm; upstream is a Rust binary now (gsc#1378). | upstream not installable here | Dispatch-only (out of the scheduled set) until the install path is known; `~/.prime/agent` is created for when it is. |
+| `grok` | `@xai-org/grok-build@latest` is 404; the plugin repo never names the harness package. | unverifiable name | Dispatch-only. |
+| `muse` | `muse-code@latest` is 404; Muse Code 0.2.1 ships as a binary. | unverifiable name | Dispatch-only. |
+| `openclaw` | `openclaw@2026.9.8` refuses Node 22 (engines `>=24.16.0 <25 \|\| >=26.1.0`). | canary env | Node 24 for this leg only. |
+| `hermes` | Installer exit 23. `install.sh` greps `pipx list` for `package hermes`, which matches `hermes-agent`, then runs `pipx inject hermes ...` against a venv that is named `hermes-agent`; the shebang fallback has no pip (pipx venvs ship without it). | **installer bug** (`install.sh`, the hermes block around `pipx inject hermes acp-hermes`) | None: the leg is right to be red until the installer injects into `hermes-agent`. |
+| `claude-code` | Anthropic answered `401 authentication_error: Invalid bearer token` through the BYO path. The proxy forwards `Authorization: Bearer` and `anthropic-beta` verbatim (`apps/tenant-gateway/src/proxy/anthropicNative.ts`), so this is the `CLAUDE_CODE_OAUTH_TOKEN` secret itself. | secret | None: re-mint with `claude setup-token` and update the secret. |
+| `qwen-code` | `qwen-acp -p` ran for the full 300 s (exit 124) printing `ACP write error: write EPIPE` from qwen-code's own `packages/cli/src/acp-integration` (Zed Agent Client Protocol transport); audit showed Read/Grep/agent/tool_search rows but never the `echo`. | upstream / product (reproduce in a sandbox) | None yet; gsc#1399 holds the log. |
+| `opencode` | "The user rejected permission to use this specific tool call" in headless `run`. | product bug gsc#1380 | None. |
+| `sdk-langchain` | `ACPMiddleware` imports `langchain.agents.middleware`; the leg installed only `acp-langchain`. | canary env | `pip install acp-langchain 'langchain>=1.3.3'`. |
+| `sdk-governance-anthropic` | `getConfig` is not exported by `@agenticcontrolplane/governance-anthropic@0.2.1` (it re-exports `governed`, `withContext`, `configure`, `getContext`). | canary script | Version from the package manifest, base URL from env. |
+| `sdk-proxy` | `@agenticcontrolplane/proxy` is 404 on npm and not in the SDK monorepo tree. | unpublished | Out of the scheduled set until it is published. |
+
+Issue volume: this one run filed 12 issues in davidcrowe/gatewaystack-connect
+(#1388 to #1399, one per leg, labels `canary` + `harness:<leg>`) on top of
+#1380. One issue per leg is the dedupe unit, so a first run of a new matrix
+is always the loudest; the dispatch-only set above is what keeps the
+scheduled run from re-filing on names it cannot resolve.
