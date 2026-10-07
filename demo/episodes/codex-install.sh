@@ -171,7 +171,7 @@ ep_beats() {
 
   # Beat 6 — the receipt.
   tlog "beat 6: audit tail"
-  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 3"
+  type_text "grep '\"event\":\"pre\"' ~/.acp/audit.jsonl | tail -n 3 | fold -w 100"
   enter
   sleep 5
 }
