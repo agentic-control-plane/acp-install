@@ -1,0 +1,169 @@
+# Harness canary — proves the released ACP install still governs the
+# CURRENT released Claude Code, Codex and opencode, with nobody watching.
+#
+# Every 6 hours (and on demand, and when a harness-release event arrives)
+# each matrix leg installs the harness fresh, installs ACP through the live
+# installer with a pre-seeded key (no device flow), pushes exactly one
+# governed tool call through the harness, and asserts the audit row landed
+# in ACP. Failures file or update one deduped issue per harness in
+# davidcrowe/gatewaystack-connect; successes close any open canary issue.
+# Setup, secrets and the workspace flag: docs/harness-canary.md.
+
+name: harness-canary
+
+on:
+  schedule:
+    - cron: '13 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: Which harness to run (all, claude-code, codex, opencode)
+        required: false
+        default: all
+        type: choice
+        options: [all, claude-code, codex, opencode]
+  repository_dispatch:
+    types: [harness-release]
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      harnesses: ${{ steps.pick.outputs.harnesses }}
+    steps:
+      - id: pick
+        env:
+          WANT: ${{ inputs.harness || github.event.client_payload.harness || 'all' }}
+        run: |
+          case "$WANT" in
+            claude-code|codex|opencode) echo "harnesses=[\"$WANT\"]" >> "$GITHUB_OUTPUT" ;;
+            *) echo 'harnesses=["claude-code","codex","opencode"]' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  canary:
+    needs: select
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: ${{ fromJSON(needs.select.outputs.harnesses) }}
+    concurrency:
+      group: harness-canary-${{ matrix.harness }}
+      cancel-in-progress: false
+    env:
+      HARNESS: ${{ matrix.harness }}
+      MARKER: acp-canary-${{ github.run_id }}-${{ matrix.harness }}
+      ACP_BASE_URL: https://api.agenticcontrolplane.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install current released harness
+        id: harness
+        run: |
+          set -eo pipefail
+          case "$HARNESS" in
+            claude-code) npm i -g @anthropic-ai/claude-code@latest; v="$(claude --version | head -1)" ;;
+            codex)       npm i -g @openai/codex@latest;              v="$(codex --version | head -1)" ;;
+            opencode)    npm i -g opencode-ai@latest;                v="$(opencode --version | head -1)" ;;
+            *) echo "unknown harness $HARNESS"; exit 2 ;;
+          esac
+          echo "resolved: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Seed ACP credentials (skips the device flow)
+        id: seed
+        env:
+          ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
+        run: |
+          set -e
+          test -n "$ACP_CANARY_KEY" || { echo "ACP_CANARY_KEY secret is not set"; exit 2; }
+          mkdir -p "$HOME/.acp"
+          printf '%s\n' "$ACP_CANARY_KEY" > "$HOME/.acp/credentials"
+          chmod 600 "$HOME/.acp/credentials"
+
+      - name: Install ACP via the live installer
+        id: acp_install
+        run: |
+          set -eo pipefail
+          # No TTY here: --only picks the harness, and the seeded key makes
+          # Step 2 (Authenticate) keep the existing key and exit 0.
+          curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- "--only=$HARNESS" 2>&1 | tee acp-install.log
+          echo "CANARY_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+      - name: Assert install invariants
+        id: invariants
+        run: node scripts/canary-assert.mjs invariants --harness "$HARNESS" 2>&1 | tee canary-invariants.log
+
+      - name: One governed tool call (Claude Code)
+        id: call_claude
+        if: matrix.harness == 'claude-code'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -eo pipefail
+          test -n "$ANTHROPIC_API_KEY" || { echo "ANTHROPIC_API_KEY secret is not set"; exit 2; }
+          timeout 300 "$HOME/.acp/bin/claude-acp" -p "Run exactly: echo $MARKER" \
+            --model haiku --allowedTools "Bash(echo:*)" --output-format json 2>&1 | tee canary-run.log
+
+      - name: One governed tool call (Codex)
+        id: call_codex
+        if: matrix.harness == 'codex'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -eo pipefail
+          test -n "$OPENAI_API_KEY" || { echo "OPENAI_API_KEY secret is not set (the acp provider has requires_openai_auth = true)"; exit 2; }
+          timeout 300 "$HOME/.acp/bin/codex-acp" exec --full-auto --skip-git-repo-check \
+            "Run exactly: echo $MARKER" 2>&1 | tee canary-run.log
+
+      - name: One governed tool call (opencode)
+        id: call_opencode
+        if: matrix.harness == 'opencode'
+        run: |
+          set -eo pipefail
+          # Model calls ride the ACP proxy (acp/gemini-3.5-flash) with the
+          # seeded key, so no provider secret is needed for this leg.
+          timeout 300 "$HOME/.acp/bin/opencode-acp" run "Run exactly: echo $MARKER" 2>&1 | tee canary-run.log
+
+      - name: Assert the audit row landed in ACP
+        id: audit
+        env:
+          ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
+          ACP_TENANT_SLUG: ${{ vars.ACP_CANARY_TENANT_SLUG }}
+        run: |
+          set -eo pipefail
+          test -n "$ACP_TENANT_SLUG" || { echo "ACP_CANARY_TENANT_SLUG repository variable is not set"; exit 2; }
+          node scripts/canary-assert.mjs audit --harness "$HARNESS" --since "$CANARY_SINCE" --marker "$MARKER" --timeout 120 2>&1 | tee canary-audit.log
+
+      - name: File, update or close the canary issue
+        if: always()
+        env:
+          CANARY_ISSUES_TOKEN: ${{ secrets.CANARY_ISSUES_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HARNESS_VERSION: ${{ steps.harness.outputs.version }}
+          O_HARNESS: ${{ steps.harness.outcome }}
+          O_SEED: ${{ steps.seed.outcome }}
+          O_INSTALL: ${{ steps.acp_install.outcome }}
+          O_INVARIANTS: ${{ steps.invariants.outcome }}
+          O_CALL: ${{ steps.call_claude.outcome }}${{ steps.call_codex.outcome }}${{ steps.call_opencode.outcome }}
+          O_AUDIT: ${{ steps.audit.outcome }}
+        run: |
+          set -e
+          failed=""; log=""
+          for pair in "install-harness:$O_HARNESS:" "seed-credentials:$O_SEED:" "install-acp:$O_INSTALL:acp-install.log" \
+                      "install-invariants:$O_INVARIANTS:canary-invariants.log" "governed-call:$O_CALL:canary-run.log" \
+                      "audit-row:$O_AUDIT:canary-audit.log"; do
+            name="${pair%%:*}"; rest="${pair#*:}"; outcome="${rest%%:*}"; file="${rest#*:}"
+            if [ "$outcome" = "failure" ] && [ -z "$failed" ]; then failed="$name"; log="$file"; fi
+          done
+          if [ -n "$failed" ]; then status=failure; else status=success; fi
+          node scripts/canary-report.mjs --harness "$HARNESS" --status "$status" --version "$HARNESS_VERSION" \
+            --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"}
