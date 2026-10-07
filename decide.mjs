@@ -172,9 +172,11 @@ const PRIVILEGED_BINS = new Set([
  *  unknown 1, privileged 2. Ties resolve to the EARLIEST unit. */
 function privilegeRank(bin) {
   if (BENIGN_BINS.has(bin)) return 0;
-  if (PRIVILEGED_BINS.has(bin)) return 2;
+  if (PRIVILEGED_BINS.has(bin) || isShellBin(bin)) return 2;   // every shell, not only the listed ones (#1333)
   return 1;
 }
+
+const COMMAND_WORD_RE = /^(?:\[\[?|[\w.][\w.+-]*)$/;
 
 /** Every governed unit of a Bash command: one per segment, plus the payload
  *  of any `bash -c "…"` / `eval …` hand-off (recursed, capped), so neither a
@@ -184,7 +186,9 @@ function commandUnits(cmd, depth = 0) {
   if (depth > 3) return units;
   for (const seg of splitSegments(cmd)) {
     const { bin, args } = parseCommand(seg);
-    if (!bin) continue;
+    // A residue like `$` from `$(` is not a command word, and must not name
+    // the call Bash.$ — no rule can be written against it (#1335).
+    if (!bin || !COMMAND_WORD_RE.test(bin)) continue;
     units.push({ bin, args, seg });
     const inner = innerShellCommand(bin, args);
     if (inner) units.push(...commandUnits(inner, depth + 1));
@@ -280,27 +284,22 @@ function rmForceFloor(bin, args) {
   return null;
 }
 
-/** git push that force-updates main/master (any flag order, -f or --force, or
- *  a +refspec). */
-function gitForcePushFloor(bin, args) {
-  if (bin !== "git") return null;
-  if (firstSubcommand(args) !== "push") return null;
-  const targetsMain = args.some((a) => /(^|[:+/])(main|master)$/.test(a));
-  if (!targetsMain) return null;
-  const forceFlag = hasShortOrLongFlag(args, "f", "force") || args.includes("--force-with-lease");
-  const plusRefspec = args.some((a) => /^\+/.test(a) && /(main|master)/.test(a));
-  if (forceFlag || plusRefspec) return "force-push to main/master";
-  return null;
-}
+// Force-push is not on this floor (#1335, decided 2026-09-23): it is an ask
+// on every surface, via FORCE_PUSH_RE in the destructive floor, so the same
+// push behaves the same locally and on the gateway.
 
 // Shells whose `-c <string>` argument is itself a command line: recurse the
 // floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
-const SHELL_BINS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"]);
+// A shape, not a list (#1333): any short word ending in "sh" — ash, mksh and
+// whatever comes next — except ssh, whose -c takes a cipher.
+function isShellBin(bin) {
+  return bin !== "ssh" && /^[a-z]{0,3}sh$/.test(bin);
+}
 
 /** If this command hands a string to another interpreter (`bash -c '…'`,
  *  `eval …`), return that inner command line; else undefined. */
 function innerShellCommand(bin, args) {
-  if (SHELL_BINS.has(bin)) {
+  if (isShellBin(bin)) {
     for (let i = 0; i < args.length; i++) {
       if (/^-[a-z]*c[a-z]*$/i.test(args[i])) return args[i + 1];
     }
@@ -315,7 +314,7 @@ function tokenFloorScan(cmd, depth = 0) {
   if (depth > 3) return null;
   for (const seg of splitSegments(cmd)) {
     const { bin, args } = parseCommand(seg);
-    const hit = rmForceFloor(bin, args) || gitForcePushFloor(bin, args);
+    const hit = rmForceFloor(bin, args);
     if (hit) return hit;
     const inner = innerShellCommand(bin, args);
     if (inner) {
@@ -549,7 +548,7 @@ export function stripDataHeredocs(cmd) {
     const body = lines.slice(i + 1, end);
     out.push(line);
     const { bin, args } = parseCommand(line.slice(0, m.index));
-    const shellDashC = SHELL_BINS.has(bin) && args.some((a) => /^-[a-z]*c[a-z]*$/i.test(a));
+    const shellDashC = isShellBin(bin) && args.some((a) => /^-[a-z]*c[a-z]*$/i.test(a));
     if (INTERPRETER_BINS.has(bin) && !shellDashC) out.push(...body);
     else if (!quoted) { const subs = body.join("\n").match(/\$\([^)]*\)|`[^`]*`/g); if (subs) out.push(subs.join(" ")); }
     if (end < lines.length) out.push(lines[end]);
@@ -623,9 +622,10 @@ export function sqlPayloads(cmd) {
   return out.map((x) => x.trim()).filter(Boolean);
 }
 
-const FORCE_PUSH_RE = /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force(?!-with-lease|-if-includes)\b|\s-[a-eg-zA-Z]*f[a-zA-Z]*(?=\s|$)|\s\+[^\s:]+:)/;
-const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*\/)?(?:ba|z|da|k)?sh\b/;
-const SHELL_OF_DOWNLOAD_RE = /\b(?:ba|z|da|k)?sh\s+(?:-[a-zA-Z]+\s+)*(?:-c\s+["']?\$\(\s*(?:curl|wget)\b|<\s*<?\s*\(\s*(?:curl|wget)\b)/;
+// `+main` forces as surely as `+main:main` (#1335).
+const FORCE_PUSH_RE = /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force(?!-with-lease|-if-includes)\b|\s-[a-eg-zA-Z]*f[a-zA-Z]*(?=\s|$)|\s\+[^\s:]+(?::|(?=\s|$)))/;
+const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*\/)?(?!ssh\b)[a-z]{0,3}sh\b/;
+const SHELL_OF_DOWNLOAD_RE = /\b(?!ssh\b)[a-z]{0,3}sh\s+(?:-[a-zA-Z]+\s+)*(?:-c\s+["']?\$\(\s*(?:curl|wget)\b|<\s*<?\s*\(\s*(?:curl|wget)\b)/;
 const TMP_PATH_RE = /^(?:\/tmp|\/private\/tmp|\/var\/folders|\/var\/tmp|\$\{?TMPDIR\}?)(?:\/|$)/;
 
 /** `rm -r` whose target is absolute, home-relative, parent-relative, or a
