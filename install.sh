@@ -2986,7 +2986,7 @@ if [ "$LOCAL_MODE" = true ]; then
   if [ ! -f "$CONFIG_DIR/policy.json" ]; then
     cat > "$CONFIG_DIR/policy.json" << 'POLICY'
 {
-  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs, force-push to main) always denies regardless of this file. 'default' applies when no rule matches. 'contextGuard' sizes whole-file reads (Read, cat, head, tail, less, more) before they happen: mode shadow only records what a read over maxLines would have put into context (see ~/.acp/audit.jsonl → contextGuard.estTokens); set mode to enforce to block them with a steer toward offset/limit, grep, or a subagent.",
+  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs) always denies regardless of this file, and a force-push to main always asks first. 'default' applies when no rule matches. 'contextGuard' sizes whole-file reads (Read, cat, head, tail, less, more) before they happen: mode shadow only records what a read over maxLines would have put into context (see ~/.acp/audit.jsonl → contextGuard.estTokens); set mode to enforce to block them with a steer toward offset/limit, grep, or a subagent.",
   "default": "allow",
   "rules": {
     "Bash.rm": "ask",
@@ -3012,8 +3012,8 @@ POLICY
   echo "  Every call is logged to ${C_DIM}~/.acp/audit.jsonl${C_RESET}:"
   echo "    ${C_DIM}tail -f ~/.acp/audit.jsonl${C_RESET}"
   echo ""
-  echo "  The safety floor always blocks the catastrophic (rm -rf /, mkfs, dd, fork bombs,"
-  echo "  force-push to main) regardless of policy."
+  echo "  The safety floor always blocks the catastrophic (rm -rf /, mkfs, dd, fork bombs)"
+  echo "  and always asks before a force-push to main, regardless of policy."
   echo ""
   echo "  Restart your AI client to activate the hook."
   echo "  Want team control, cost X-ray, and a shared console across everyone's agents?"
