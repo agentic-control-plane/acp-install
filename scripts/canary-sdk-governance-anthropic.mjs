@@ -6,13 +6,19 @@
 // back as "tool_error: <reason>" and still counts (the gateway decided); a
 // fail-open lapse (cause in the reason, handler ran ungoverned) is a FAIL.
 // Env: ACP_CANARY_KEY, MARKER, ACP_BASE_URL (optional).
-import { configure, getConfig, governHandlers, withContext } from "@agenticcontrolplane/governance-anthropic";
+//
+// governance-anthropic re-exports governed/withContext/configure/getContext
+// from @agenticcontrolplane/governance but NOT getConfig (0.2.1), so the
+// version comes from the package manifest and the base URL from env.
+import { createRequire } from "node:module";
+import { configure, governHandlers, withContext } from "@agenticcontrolplane/governance-anthropic";
 
 const key = process.env.ACP_CANARY_KEY;
 if (!key) { console.error("ACP_CANARY_KEY is not set"); process.exit(2); }
 const marker = process.env.MARKER || `acp-canary-local-${Date.now()}`;
-const version = getConfig().clientHeader.split("/")[1] || "unknown";
-configure({ baseUrl: process.env.ACP_BASE_URL || getConfig().baseUrl, clientHeader: `acp-canary-sdk-governance-anthropic/${version}` });
+const require = createRequire(import.meta.url);
+const version = require("@agenticcontrolplane/governance-anthropic/package.json").version || "unknown";
+configure({ baseUrl: process.env.ACP_BASE_URL || "https://api.agenticcontrolplane.com", clientHeader: `acp-canary-sdk-governance-anthropic/${version}` });
 
 let lapse = "";
 const origWarn = console.warn;
