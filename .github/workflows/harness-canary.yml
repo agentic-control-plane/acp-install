@@ -1,18 +1,28 @@
 # Harness canary — proves the released ACP install still wires into the
-# CURRENT released Claude Code, Codex and opencode, with nobody watching.
+# CURRENT released harnesses and SDKs, with nobody watching.
 #
 # Every 6 hours (and on demand, and when a harness-release event arrives)
 # each matrix leg installs the harness fresh, installs ACP through the live
 # installer with a pre-seeded key (no device flow) and asserts the install
-# invariants. The opencode leg goes further: it pushes exactly one governed
-# tool call through `opencode-acp run` (model calls ride ACP's proxy on the
-# platform Gemini key, so no vendor key is needed) and asserts the audit
-# row landed in ACP. The claude-code and codex legs stop at the invariants:
-# their live calls would need vendor (Anthropic / OpenAI) keys, which the
-# canary does not carry by decision. Failures file or update one deduped
-# issue per harness in davidcrowe/gatewaystack-connect; a fully green leg
-# closes any open canary issue for that harness.
-# Setup, secrets and the workspace flag: docs/harness-canary.md.
+# invariants. Legs whose harness can run headless on a model that needs no
+# vendor key go further: they push exactly one governed tool call and
+# assert the audit row landed in ACP. The SDK job installs each published
+# ACP SDK package and makes one governed tool-call check against the canary
+# workspace. Failures file or update one deduped issue per leg in
+# davidcrowe/gatewaystack-connect; a fully green leg closes any open canary
+# issue for that leg. Coverage table, secrets and the workspace flag:
+# docs/harness-canary.md.
+#
+# Live legs (one governed `echo <marker>`, then the audit-row assert):
+#   claude-code  claude-acp -p, BYO subscription OAuth (CLAUDE_CODE_OAUTH_TOKEN)
+#                forwarded by the proxy; no ANTHROPIC_API_KEY anywhere.
+#   opencode     opencode-acp run, acp/gemini-3.5-flash through the proxy.
+#   qwen-code    qwen-acp -p, OPENAI_BASE_URL -> proxy, gemini-3.5-flash.
+#   pi           pi-acp -p, acp/gemini-3.5-flash provider from models.json.
+#   prime-agent  prime-acp -p, acp/gemini-3.5-flash (expected red: gsc#1378,
+#                upstream rewritten in Rust; the leg reports, it does not hide).
+# Invariants-only legs (why, in docs/harness-canary.md): codex, grok, dsh,
+# hermes, openclaw, muse.
 
 name: harness-canary
 
@@ -22,34 +32,64 @@ on:
   workflow_dispatch:
     inputs:
       harness:
-        description: Which harness to run (all, claude-code, codex, opencode)
+        description: Which leg to run (all, harnesses, sdks, or one leg id)
         required: false
         default: all
         type: choice
-        options: [all, claude-code, codex, opencode]
+        options:
+          - all
+          - harnesses
+          - sdks
+          - claude-code
+          - codex
+          - opencode
+          - qwen-code
+          - pi
+          - prime-agent
+          - grok
+          - dsh
+          - hermes
+          - openclaw
+          - muse
+          - sdk-governance-js
+          - sdk-governance-anthropic
+          - sdk-proxy
+          - sdk-governance-py
+          - sdk-langchain
+          - sdk-pydantic-ai
+          - sdk-crewai
   repository_dispatch:
     types: [harness-release]
 
 permissions:
   contents: read
 
+env:
+  ALL_HARNESSES: '["claude-code","codex","opencode","qwen-code","pi","prime-agent","grok","dsh","hermes","openclaw","muse"]'
+  ALL_SDKS: '["sdk-governance-js","sdk-governance-anthropic","sdk-proxy","sdk-governance-py","sdk-langchain","sdk-pydantic-ai","sdk-crewai"]'
+
 jobs:
   select:
     runs-on: ubuntu-latest
     outputs:
       harnesses: ${{ steps.pick.outputs.harnesses }}
+      sdks: ${{ steps.pick.outputs.sdks }}
     steps:
       - id: pick
         env:
           WANT: ${{ inputs.harness || github.event.client_payload.harness || 'all' }}
         run: |
           case "$WANT" in
-            claude-code|codex|opencode) echo "harnesses=[\"$WANT\"]" >> "$GITHUB_OUTPUT" ;;
-            *) echo 'harnesses=["claude-code","codex","opencode"]' >> "$GITHUB_OUTPUT" ;;
+            all)       echo "harnesses=$ALL_HARNESSES" >> "$GITHUB_OUTPUT"; echo "sdks=$ALL_SDKS" >> "$GITHUB_OUTPUT" ;;
+            harnesses) echo "harnesses=$ALL_HARNESSES" >> "$GITHUB_OUTPUT"; echo "sdks=[]" >> "$GITHUB_OUTPUT" ;;
+            sdks)      echo "harnesses=[]" >> "$GITHUB_OUTPUT"; echo "sdks=$ALL_SDKS" >> "$GITHUB_OUTPUT" ;;
+            sdk-*)     echo "harnesses=[]" >> "$GITHUB_OUTPUT"; echo "sdks=[\"$WANT\"]" >> "$GITHUB_OUTPUT" ;;
+            *)         echo "harnesses=[\"$WANT\"]" >> "$GITHUB_OUTPUT"; echo "sdks=[]" >> "$GITHUB_OUTPUT" ;;
           esac
 
   canary:
     needs: select
+    if: needs.select.outputs.harnesses != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -63,6 +103,9 @@ jobs:
       HARNESS: ${{ matrix.harness }}
       MARKER: acp-canary-${{ github.run_id }}-${{ matrix.harness }}
       ACP_BASE_URL: https://api.agenticcontrolplane.com
+      # Legs that push one governed call. Everything else ends at the
+      # invariants (see the header comment and docs/harness-canary.md).
+      LIVE_LEGS: ' claude-code opencode qwen-code pi prime-agent '
     steps:
       - uses: actions/checkout@v4
 
@@ -70,14 +113,32 @@ jobs:
         with:
           node-version: 22
 
+      - uses: actions/setup-python@v5
+        if: matrix.harness == 'hermes'
+        with:
+          python-version: '3.12'
+
+      # Package names for qwen-code, pi, openclaw come from the harness repos
+      # / the pi monorepo; prime-agent, grok, dsh, hermes, muse were NOT
+      # resolvable from the repo when this leg was written (the registry
+      # lookups were refused), so a wrong name shows up as install-harness
+      # red on the first run and the issue says so. Do not paper over it.
       - name: Install current released harness
         id: harness
         run: |
           set -eo pipefail
           case "$HARNESS" in
-            claude-code) npm i -g @anthropic-ai/claude-code@latest; v="$(claude --version | head -1)" ;;
-            codex)       npm i -g @openai/codex@latest;              v="$(codex --version | head -1)" ;;
-            opencode)    npm i -g opencode-ai@latest;                v="$(opencode --version | head -1)" ;;
+            claude-code) npm i -g @anthropic-ai/claude-code@latest;          v="$(claude --version | head -1)" ;;
+            codex)       npm i -g @openai/codex@latest;                       v="$(codex --version | head -1)" ;;
+            opencode)    npm i -g opencode-ai@latest;                         v="$(opencode --version | head -1)" ;;
+            qwen-code)   npm i -g @qwen-code/qwen-code@latest;                v="$(qwen --version | head -1)" ;;
+            pi)          npm i -g @earendil-works/pi-coding-agent@latest;     v="$(pi --version | head -1)" ;;
+            prime-agent) npm i -g prime-agent@latest;                         v="$(prime-agent --version 2>/dev/null | head -1 || prime --version | head -1)" ;;
+            grok)        npm i -g @xai-org/grok-build@latest;                 v="$(grok --version | head -1)" ;;
+            dsh)         npm i -g deepseek-harness@latest;                    v="$(dsh --version | head -1)" ;;
+            hermes)      pipx install hermes-agent;                           v="$(hermes --version | head -1)" ;;
+            openclaw)    npm i -g openclaw@latest;                            v="$(openclaw --version | head -1)" ;;
+            muse)        npm i -g muse-code@latest; mkdir -p "$HOME/.config/muse"; v="$(muse --version | head -1)" ;;
             *) echo "unknown harness $HARNESS"; exit 2 ;;
           esac
           echo "resolved: $v"
@@ -93,6 +154,13 @@ jobs:
           mkdir -p "$HOME/.acp"
           printf '%s\n' "$ACP_CANARY_KEY" > "$HOME/.acp/credentials"
           chmod 600 "$HOME/.acp/credentials"
+          # qwen-acp only prices a launch when Qwen Code's auth type is
+          # "openai" (it then honours OPENAI_BASE_URL -> the proxy). Seed that
+          # before the installer merges its hooks into the same file.
+          if [ "$HARNESS" = "qwen-code" ]; then
+            mkdir -p "$HOME/.qwen"
+            [ -f "$HOME/.qwen/settings.json" ] || printf '{ "security": { "auth": { "selectedType": "openai" } } }\n' > "$HOME/.qwen/settings.json"
+          fi
 
       - name: Install ACP via the live installer
         id: acp_install
@@ -107,28 +175,40 @@ jobs:
         id: invariants
         run: node scripts/canary-assert.mjs invariants --harness "$HARNESS" 2>&1 | tee canary-invariants.log
 
-      # Live leg: opencode only. The claude-code and codex legs end at the
-      # invariants above (their live calls need vendor keys; see the docs).
-      - name: One governed tool call (opencode, via ACP's Gemini)
+      # Live legs only. Model traffic rides the ACP proxy on the seeded key:
+      # Gemini on the platform key for opencode / qwen-code / pi / prime-agent,
+      # the canary's own subscription OAuth (forwarded verbatim by the proxy's
+      # BYO path, apps/tenant-gateway/src/proxy/anthropicNative.ts) for
+      # claude-code. No ANTHROPIC_API_KEY / OPENAI_API_KEY exists in this job.
+      - name: One governed tool call
         id: call
-        if: matrix.harness == 'opencode'
+        if: contains(env.LIVE_LEGS, format(' {0} ', matrix.harness))
         env:
           ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
           ACP_TENANT_SLUG: ${{ vars.ACP_CANARY_TENANT_SLUG }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.harness == 'claude-code' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: |
           set -o pipefail
-          # Model calls ride the ACP proxy (acp/gemini-3.5-flash) with the
-          # seeded key, so no provider secret is needed for this leg.
-          timeout 300 "$HOME/.acp/bin/opencode-acp" run "Run exactly: echo $MARKER" 2>&1 | tee canary-run.log
+          prompt="Run exactly: echo $MARKER"
+          case "$HARNESS" in
+            claude-code)
+              test -n "$CLAUDE_CODE_OAUTH_TOKEN" || { echo "CLAUDE_CODE_OAUTH_TOKEN secret is not set"; exit 2; }
+              timeout 300 "$HOME/.acp/bin/claude-acp" -p "$prompt" --allowedTools "Bash(echo:*)" 2>&1 | tee canary-run.log ;;
+            opencode)    timeout 300 "$HOME/.acp/bin/opencode-acp" run "$prompt" 2>&1 | tee canary-run.log ;;
+            qwen-code)   timeout 300 "$HOME/.acp/bin/qwen-acp" -p "$prompt" 2>&1 | tee canary-run.log ;;
+            pi)          timeout 300 "$HOME/.acp/bin/pi-acp" -p "$prompt" 2>&1 | tee canary-run.log ;;
+            prime-agent) timeout 300 "$HOME/.acp/bin/prime-acp" -p "$prompt" 2>&1 | tee canary-run.log ;;
+            *) echo "no live call defined for $HARNESS"; exit 2 ;;
+          esac
           rc=$?
-          # gsc#1380: headless opencode rejecting the governed call is a
+          # gsc#1380: a headless harness rejecting the governed call is a
           # product bug, not a pass. Fail the step and dump every audit row
           # in the window with its decision so the failure can be classified
-          # (decision=allow -> plugin/opencode permission contract drift;
+          # (decision=allow -> plugin/harness permission contract drift;
           # decision=ask -> the gateway is asking in audit mode).
-          if grep -Eiq 'auto-rejecting|rejected permission' canary-run.log; then
-            echo "FAIL opencode rejected the governed call (gsc#1380):"
-            grep -Ei 'auto-rejecting|rejected permission' canary-run.log
+          if grep -Eiq 'auto-rejecting|rejected permission|Denied at approval|permission denied|requires approval' canary-run.log; then
+            echo "FAIL $HARNESS rejected the governed call (gsc#1380):"
+            grep -Ei 'auto-rejecting|rejected permission|Denied at approval|permission denied|requires approval' canary-run.log
             echo "audit rows seen since $CANARY_SINCE (decision per row):"
             node scripts/canary-assert.mjs rows --harness "$HARNESS" --since "$CANARY_SINCE" || true
             exit 1
@@ -137,7 +217,7 @@ jobs:
 
       - name: Assert the audit row landed in ACP
         id: audit
-        if: always() && matrix.harness == 'opencode' && steps.call.outcome != 'skipped'
+        if: always() && contains(env.LIVE_LEGS, format(' {0} ', matrix.harness)) && steps.call.outcome != 'skipped'
         env:
           ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
           ACP_TENANT_SLUG: ${{ vars.ACP_CANARY_TENANT_SLUG }}
@@ -146,10 +226,10 @@ jobs:
           test -n "$ACP_TENANT_SLUG" || { echo "ACP_CANARY_TENANT_SLUG repository variable is not set"; exit 2; }
           node scripts/canary-assert.mjs audit --harness "$HARNESS" --since "$CANARY_SINCE" --marker "$MARKER" --timeout 120 2>&1 | tee canary-audit.log
 
-      # The step list is per harness: opencode owns `call` + `audit`; the
-      # other two end at `invariants`. A leg is green only when EVERY step
-      # on its list has outcome=success (skipped or cancelled is not green),
-      # so a skipped step can never close an open issue.
+      # The step list is per harness: live legs own `call` + `audit`; the
+      # others end at `invariants`. A leg is green only when EVERY step on
+      # its list has outcome=success (skipped or cancelled is not green), so
+      # a skipped step can never close an open issue.
       - name: File, update or close the canary issue
         if: always()
         env:
@@ -165,9 +245,9 @@ jobs:
         run: |
           set -e
           steps="install-harness:$O_HARNESS: seed-credentials:$O_SEED: install-acp:$O_INSTALL:acp-install.log install-invariants:$O_INVARIANTS:canary-invariants.log"
-          if [ "$HARNESS" = "opencode" ]; then
-            steps="$steps governed-call:$O_CALL:canary-run.log,canary-audit.log audit-row:$O_AUDIT:canary-run.log,canary-audit.log"
-          fi
+          case "$LIVE_LEGS" in *" $HARNESS "*)
+            steps="$steps governed-call:$O_CALL:canary-run.log,canary-audit.log audit-row:$O_AUDIT:canary-run.log,canary-audit.log" ;;
+          esac
           failed=""; log=""; status=success
           for triple in $steps; do
             name="${triple%%:*}"; rest="${triple#*:}"; outcome="${rest%%:*}"; file="${rest#*:}"
@@ -178,4 +258,110 @@ jobs:
             fi
           done
           node scripts/canary-report.mjs --harness "$HARNESS" --status "$status" --version "$HARNESS_VERSION" \
+            --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"}
+
+  # SDK legs: install the PUBLISHED package (npm / PyPI, latest), make one
+  # governed tool-call check (POST /govern/tool-use with tool `shell`,
+  # command `echo <marker>`) against the canary workspace with the seeded
+  # key, and assert the audit row landed. The proxy SDK has no tool-call
+  # shape: its check is one acpFetch through ACP's egress and a typed
+  # answer (connected, not connected, or policy-denied all count; 401 and
+  # unreachable do not). Each leg's step list: install-package, run-check,
+  # audit-row (the proxy leg has no audit-row step).
+  sdk:
+    needs: select
+    if: needs.select.outputs.sdks != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ${{ fromJSON(needs.select.outputs.sdks) }}
+    concurrency:
+      group: harness-canary-${{ matrix.sdk }}
+      cancel-in-progress: false
+    env:
+      LEG: ${{ matrix.sdk }}
+      MARKER: acp-canary-${{ github.run_id }}-${{ matrix.sdk }}
+      ACP_BASE_URL: https://api.agenticcontrolplane.com
+      ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
+      ACP_TENANT_SLUG: ${{ vars.ACP_CANARY_TENANT_SLUG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        if: contains(fromJSON('["sdk-governance-py","sdk-langchain","sdk-pydantic-ai","sdk-crewai"]'), matrix.sdk)
+        with:
+          python-version: '3.12'
+
+      - name: Install the published package
+        id: pkg
+        run: |
+          set -eo pipefail
+          mkdir -p "$RUNNER_TEMP/sdk" && cd "$RUNNER_TEMP/sdk" && npm init -y > /dev/null
+          case "$LEG" in
+            sdk-governance-js)        npm i @agenticcontrolplane/governance@latest;           v="$(npm ls @agenticcontrolplane/governance --depth=0 | grep -o '@agenticcontrolplane/governance@[0-9.]*')" ;;
+            sdk-governance-anthropic) npm i @agenticcontrolplane/governance-anthropic@latest; v="$(npm ls @agenticcontrolplane/governance-anthropic --depth=0 | grep -o '@agenticcontrolplane/governance-anthropic@[0-9.]*')" ;;
+            sdk-proxy)                npm i @agenticcontrolplane/proxy@latest;                v="$(npm ls @agenticcontrolplane/proxy --depth=0 | grep -o '@agenticcontrolplane/proxy@[0-9.]*')" ;;
+            sdk-governance-py)        pip install -q acp-governance;   v="$(pip show acp-governance | grep -i '^version')" ;;
+            sdk-langchain)            pip install -q acp-langchain;    v="$(pip show acp-langchain | grep -i '^version')" ;;
+            sdk-pydantic-ai)          pip install -q acp-pydantic-ai;  v="$(pip show acp-pydantic-ai | grep -i '^version')" ;;
+            sdk-crewai)               pip install -q acp-crewai;       v="$(pip show acp-crewai | grep -i '^version')" ;;
+            *) echo "unknown sdk leg $LEG"; exit 2 ;;
+          esac
+          echo "resolved: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "CANARY_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+      - name: One governed tool-call check
+        id: call
+        run: |
+          set -eo pipefail
+          test -n "$ACP_CANARY_KEY" || { echo "ACP_CANARY_KEY secret is not set"; exit 2; }
+          name="${LEG#sdk-}"
+          case "$LEG" in
+            sdk-governance-js|sdk-governance-anthropic|sdk-proxy)
+              # ESM resolution ignores NODE_PATH: run the script from the
+              # directory the package was installed into.
+              cp "scripts/canary-sdk-$name.mjs" "$RUNNER_TEMP/sdk/"
+              node "$RUNNER_TEMP/sdk/canary-sdk-$name.mjs" 2>&1 | tee canary-run.log ;;
+            *)
+              python "scripts/canary-sdk-$name.py" 2>&1 | tee canary-run.log ;;
+          esac
+
+      - name: Assert the audit row landed in ACP
+        id: audit
+        if: always() && matrix.sdk != 'sdk-proxy' && steps.call.outcome != 'skipped'
+        run: |
+          set -eo pipefail
+          test -n "$ACP_TENANT_SLUG" || { echo "ACP_CANARY_TENANT_SLUG repository variable is not set"; exit 2; }
+          node scripts/canary-assert.mjs audit --harness "$LEG" --since "$CANARY_SINCE" --marker "$MARKER" --timeout 120 2>&1 | tee canary-audit.log
+
+      - name: File, update or close the canary issue
+        if: always()
+        env:
+          CANARY_ISSUES_TOKEN: ${{ secrets.CANARY_ISSUES_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PKG_VERSION: ${{ steps.pkg.outputs.version }}
+          O_PKG: ${{ steps.pkg.outcome }}
+          O_CALL: ${{ steps.call.outcome }}
+          O_AUDIT: ${{ steps.audit.outcome }}
+        run: |
+          set -e
+          steps="install-package:$O_PKG: run-check:$O_CALL:canary-run.log"
+          if [ "$LEG" != "sdk-proxy" ]; then steps="$steps audit-row:$O_AUDIT:canary-run.log,canary-audit.log"; fi
+          failed=""; log=""; status=success
+          for triple in $steps; do
+            name="${triple%%:*}"; rest="${triple#*:}"; outcome="${rest%%:*}"; file="${rest#*:}"
+            echo "$name: $outcome"
+            if [ "$outcome" != "success" ]; then
+              status=failure
+              if [ -z "$failed" ]; then failed="$name"; log="$file"; fi
+            fi
+          done
+          node scripts/canary-report.mjs --harness "$LEG" --status "$status" --version "$PKG_VERSION" \
             --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"}
