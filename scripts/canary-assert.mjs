@@ -3,7 +3,8 @@
 //
 //   invariants --harness <id>
 //     The installer wrote exactly what it should for this harness, once.
-//     This is the whole canary for claude-code and codex (no live call).
+//     This is the whole canary for the invariants-only legs (codex, grok,
+//     dsh, hermes, openclaw, muse; see docs/harness-canary.md for why).
 //
 //   audit --harness <id> --since <iso Z> [--marker <m>] [--timeout <s>]
 //     A governed tool-call row for this harness landed in ACP's audit log
@@ -39,9 +40,13 @@ const opt = (name, dflt) => {
 };
 
 const HOME = os.homedir();
+// Every leg id the workflow can pass. Harness legs get `invariants`; live
+// harness legs and SDK legs get `audit` / `rows`.
+export const HARNESSES = ["claude-code", "codex", "opencode", "qwen-code", "pi", "prime-agent", "grok", "dsh", "hermes", "openclaw", "muse"];
+export const SDK_LEGS = ["sdk-governance-js", "sdk-governance-anthropic", "sdk-proxy", "sdk-governance-py", "sdk-langchain", "sdk-pydantic-ai", "sdk-crewai"];
 const harness = opt("harness");
-if (!["claude-code", "codex", "opencode"].includes(harness)) {
-  console.error(`usage: canary-assert.mjs <invariants|audit> --harness <claude-code|codex|opencode>`);
+if (![...HARNESSES, ...SDK_LEGS].includes(harness)) {
+  console.error(`usage: canary-assert.mjs <invariants|audit|rows> --harness <${[...HARNESSES, ...SDK_LEGS].join("|")}>`);
   process.exit(2);
 }
 
@@ -60,6 +65,33 @@ function governEntries(hooks, event) {
 }
 function isExecutable(p) {
   try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; }
+}
+function readText(p) {
+  try { return fs.readFileSync(p, "utf8"); } catch { return ""; }
+}
+function countLines(text, re) {
+  return text.split("\n").filter((l) => re.test(l)).length;
+}
+// The agent directive the installer writes (acp:begin ... acp:end) must be
+// in the file exactly once after any number of runs.
+function directiveOnce(file) {
+  const t = readText(path.join(HOME, file));
+  const b = (t.match(/acp:begin/g) || []).length, e = (t.match(/acp:end/g) || []).length;
+  check(b === 1 && e === 1, `~/${file} has the ACP directive exactly once (begin=${b}, end=${e})`);
+}
+function launcher(name) {
+  check(isExecutable(path.join(HOME, ".acp", "bin", name)), `~/.acp/bin/${name} is executable`);
+}
+// Count every hook command string anywhere in a JSON document that runs
+// govern.mjs (for harnesses whose hook file shape is theirs, not ours).
+function governCommandsDeep(v, acc = []) {
+  if (typeof v === "string") { if (v.includes("govern.mjs")) acc.push(v); }
+  else if (Array.isArray(v)) v.forEach((x) => governCommandsDeep(x, acc));
+  else if (v && typeof v === "object") Object.values(v).forEach((x) => governCommandsDeep(x, acc));
+  return acc;
+}
+function tryExec(cmd) {
+  try { return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return ""; }
 }
 
 function invariants() {
@@ -81,7 +113,8 @@ function invariants() {
       check(pre === 1, `no plugin: settings.json PreToolUse has the govern hook exactly once (found ${pre})`);
       check(post === 1, `no plugin: settings.json PostToolUse has the govern hook exactly once (found ${post})`);
     }
-    check(isExecutable(path.join(HOME, ".acp", "bin", "claude-acp")), "~/.acp/bin/claude-acp is executable");
+    launcher("claude-acp");
+    directiveOnce(".claude/CLAUDE.md");
   }
   if (harness === "codex") {
     let toml = "";
@@ -91,7 +124,8 @@ function invariants() {
     const h = readJson(path.join(HOME, ".codex", "hooks.json"));
     check(h !== null, "~/.codex/hooks.json parses");
     check(governEntries(h?.hooks, "PreToolUse").length === 1, "hooks.json PreToolUse has the govern hook exactly once");
-    check(isExecutable(path.join(HOME, ".acp", "bin", "codex-acp")), "~/.acp/bin/codex-acp is executable");
+    launcher("codex-acp");
+    directiveOnce(".codex/AGENTS.md");
   }
   if (harness === "opencode") {
     const c = readJson(path.join(HOME, ".config", "opencode", "opencode.json"));
@@ -99,8 +133,79 @@ function invariants() {
     const n = Array.isArray(c?.plugin) ? c.plugin.filter((p) => p === "acp-opencode").length : 0;
     check(n === 1, `opencode.json plugin lists acp-opencode exactly once (found ${n})`);
     check(!!c?.provider?.acp, "opencode.json has the acp cost X-ray provider");
-    check(isExecutable(path.join(HOME, ".acp", "bin", "opencode-acp")), "~/.acp/bin/opencode-acp is executable");
+    launcher("opencode-acp");
+    directiveOnce(".config/opencode/AGENTS.md");
   }
+  if (harness === "qwen-code") {
+    // Claude Code's hook contract read from ~/.qwen/settings.json.
+    const s = readJson(path.join(HOME, ".qwen", "settings.json"));
+    check(s !== null, "~/.qwen/settings.json parses");
+    const pre = governEntries(s?.hooks, "PreToolUse").length;
+    const post = governEntries(s?.hooks, "PostToolUse").length;
+    check(pre === 1, `settings.json PreToolUse has the govern hook exactly once (found ${pre})`);
+    check(post === 1, `settings.json PostToolUse has the govern hook exactly once (found ${post})`);
+    check(s?.security?.auth?.selectedType === "openai", "settings.json kept the seeded openai auth type (qwen-acp prices only then)");
+    launcher("qwen-acp");
+    directiveOnce(".qwen/QWEN.md");
+  }
+  if (harness === "pi") {
+    check(fs.existsSync(path.join(HOME, ".pi", "agent", "extensions", "acp.ts")), "~/.pi/agent/extensions/acp.ts present");
+    const m = readJson(path.join(HOME, ".pi", "agent", "models.json"));
+    check(!!m?.providers?.acp?.baseUrl && m.providers.acp.baseURL === undefined, "models.json has the acp provider (baseUrl, not baseURL)");
+    check(!/gsk_/.test(readText(path.join(HOME, ".pi", "agent", "models.json"))), "models.json carries no key literal");
+    launcher("pi-acp");
+    directiveOnce(".pi/agent/AGENTS.md");
+  }
+  if (harness === "prime-agent") {
+    check(fs.existsSync(path.join(HOME, ".prime", "agent", "extensions", "acp.ts")), "~/.prime/agent/extensions/acp.ts present");
+    check(/ACP_PROXY/.test(readText(path.join(HOME, ".prime", "agent", "extensions", "acp-proxy.ts"))), "acp-proxy.ts present and gated on ACP_PROXY");
+    launcher("prime-acp");
+    directiveOnce(".prime/agent/AGENTS.md");
+  }
+  if (harness === "grok") {
+    check(readJson(path.join(HOME, ".grok", "hooks", "acp.json")) !== null, "~/.grok/hooks/acp.json parses");
+    const toml = readText(path.join(HOME, ".grok", "config.toml"));
+    const blocks = countLines(toml, /^\[model\.acp\]\s*$/);
+    check(blocks === 1, `~/.grok/config.toml has [model.acp] exactly once (found ${blocks})`);
+    check(/env_key = "ACP_KEY"/.test(toml) && !/api_key/.test(toml), "config.toml reads the key from env_key, never api_key");
+    launcher("grok-acp");
+    directiveOnce(".grok/AGENTS.md");
+  }
+  if (harness === "dsh") {
+    const y = readText(path.join(process.env.DSH_HOME || path.join(HOME, ".dsh"), "settings.yaml"));
+    const n = (y.match(/api\.agenticcontrolplane\.com/g) || []).length;
+    check(n === 1, `dsh settings.yaml has the acp provider exactly once (found ${n})`);
+    check(/apiKeyEnv: ACP_BEARER_TOKEN/.test(y), "settings.yaml reads the key via apiKeyEnv");
+    launcher("dsh-acp");
+    directiveOnce(".dsh/AGENTS.md");
+  }
+  if (harness === "hermes") {
+    // The plugin lives in hermes's own pip/pipx environment; the installer
+    // enables it with `hermes plugins enable acp`.
+    const plugins = tryExec("hermes plugins list");
+    check(/acp/i.test(plugins), "`hermes plugins list` shows the acp plugin");
+    launcher("hermes-acp");
+    directiveOnce(".hermes/SOUL.md");
+  }
+  if (harness === "openclaw") {
+    const s = readJson(path.join(HOME, ".openclaw", "settings.json"));
+    check(s !== null, "~/.openclaw/settings.json parses");
+    const n = governCommandsDeep(s).length;
+    check(n >= 1 && n <= 2, `settings.json runs govern.mjs once per hook event, never duplicated (found ${n} command(s))`);
+  }
+  if (harness === "muse") {
+    const plugins = tryExec("env MUSE_EXPERIMENTAL_PLUGINS=1 muse plugins list");
+    check(/acp/i.test(plugins), "`muse plugins list` shows the acp plugin");
+    directiveOnce(".config/muse/AGENTS.md");
+  }
+  // No config file the installer touches may ever carry the key literal
+  // (explicit files, not a recursive grep: plugin caches and docs under
+  // these dirs legitimately mention the gsk_ prefix).
+  const configFiles = [".claude/settings.json", ".codex/config.toml", ".codex/hooks.json", ".config/opencode/opencode.json",
+    ".qwen/settings.json", ".pi/agent/models.json", ".prime/agent/extensions/acp-proxy.ts", ".grok/config.toml", ".grok/hooks/acp.json",
+    ".dsh/settings.yaml", ".openclaw/settings.json", ".hermes/config.yaml", ".hermes/config.toml", ".hermes/config.json"];
+  const leaked = configFiles.filter((f) => /gsk_[A-Za-z0-9]{16,}/.test(readText(path.join(HOME, f))));
+  check(leaked.length === 0, `no installer-written config file carries a key literal${leaked.length ? ` (${leaked.join(", ")})` : ""}`);
 }
 
 // Client strings the gateway records for each harness. The hooks send
@@ -108,11 +213,23 @@ function invariants() {
 // 0.26.0, codex/0.26.0; the opencode npm plugin: opencode-plugin/0.4.0), so
 // match on the prefix, never on the whole string. The audit API returns
 // `client` as an object ({ name, version }), not a string.
+// Legs run concurrently against ONE canary workspace, so each live leg
+// needs a client prefix no other leg produces. The SDK scripts set their
+// own client header (`acp-canary-<leg>/<version>`) for exactly this reason.
 const CLIENT_MATCH = {
   "claude-code": /^(claude-code|claude-cli)/,
   codex: /^codex/,
   opencode: /opencode/i,
+  "qwen-code": /^qwen/i,
+  pi: /^pi\b|^pi-|^acp-pi/i,
+  "prime-agent": /^prime/i,
+  grok: /^grok/i,
+  dsh: /^dsh|deepseek/i,
+  hermes: /^hermes/i,
+  openclaw: /^openclaw/i,
+  muse: /^muse/i,
 };
+for (const leg of SDK_LEGS) CLIENT_MATCH[leg] = new RegExp(`^acp-canary-${leg}`);
 const TOOL_MATCH = /bash|shell|echo|exec/i;
 const clientName = (e) => {
   const c = e?.client;

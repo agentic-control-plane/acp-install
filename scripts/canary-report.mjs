@@ -33,10 +33,15 @@ const runUrl = opt("run-url", "");
 const failedStep = opt("failed-step", "none");
 const logFile = opt("log", "");
 
-if (!["claude-code", "codex", "opencode"].includes(harness) || !["success", "failure"].includes(status)) {
-  console.error("usage: canary-report.mjs --harness <claude-code|codex|opencode> --status <success|failure> ...");
+// Leg ids: every harness leg and every sdk-* leg the workflow defines (the
+// list lives in canary-assert.mjs; here any well-formed id is accepted so a
+// new leg cannot silently lose its reporter).
+const LIVE_LEGS = new Set(["claude-code", "opencode", "qwen-code", "pi", "prime-agent"]);
+if (!/^[a-z][a-z0-9-]*$/.test(harness ?? "") || !["success", "failure"].includes(status)) {
+  console.error("usage: canary-report.mjs --harness <leg id> --status <success|failure> ...");
   process.exit(2);
 }
+const isSdk = harness.startsWith("sdk-");
 const token = process.env.CANARY_ISSUES_TOKEN;
 if (!token && !dryRun) {
   console.error("CANARY_ISSUES_TOKEN is not set (pass --dry-run to preview)");
@@ -111,9 +116,11 @@ async function main() {
         `- Harness version: \`${version}\``,
         `- ${runLine}`,
         "",
-        harness === "opencode"
-          ? "The canary installs the current released harness, installs ACP via the live installer with a seeded key, asserts the install invariants, pushes one governed `echo` through `opencode-acp run` (ACP's Gemini via the proxy) and asserts the audit row landed. A transcript containing `auto-rejecting` / `rejected permission` fails the governed-call step (gsc#1380); the audit rows in the window are printed with their `decision` so it can be classified. This issue is updated on every failing run and closed automatically on the next run where every step is green."
-          : "The canary installs the current released harness, installs ACP via the live installer with a seeded key and asserts the install invariants (plugin/hook wired exactly once, launcher executable). This leg has no live governed call: that needs a vendor model key the canary does not carry. This issue is updated on every failing run and closed automatically on the next run where every step is green.",
+        isSdk
+          ? `The canary installs the published ${harness.slice(4)} package at latest, makes one governed tool-call check against the canary workspace (POST /govern/tool-use, tool \`shell\`, \`echo <marker>\`; the proxy SDK makes one acpFetch through ACP's egress instead) and, except for the proxy leg, asserts the audit row landed. Steps: install-package, run-check, audit-row. This issue is updated on every failing run and closed automatically on the next run where every step is green.`
+          : LIVE_LEGS.has(harness)
+            ? `The canary installs the current released harness, installs ACP via the live installer with a seeded key, asserts the install invariants, pushes one governed \`echo\` through the \`${harness}\` launcher (model traffic through ACP's proxy: Gemini on the platform key, or the canary's own subscription OAuth for claude-code) and asserts the audit row landed. A transcript containing a rejection (\`auto-rejecting\`, \`rejected permission\`, \`Denied at approval\`, ...) fails the governed-call step (gsc#1380); the audit rows in the window are printed with their \`decision\` so it can be classified. This issue is updated on every failing run and closed automatically on the next run where every step is green.`
+            : "The canary installs the current released harness, installs ACP via the live installer with a seeded key and asserts the install invariants (plugin/hook/provider wired exactly once, launcher executable, directive once, no key literal in any config). This leg has no live governed call: the harness cannot run headless on a model that needs no vendor key (docs/harness-canary.md has the per-leg reason). This issue is updated on every failing run and closed automatically on the next run where every step is green.",
         logExcerpt(),
       ].join("\n"),
     });
