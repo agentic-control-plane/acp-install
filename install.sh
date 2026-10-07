@@ -90,6 +90,75 @@ else
   C_RESET=""
 fi
 
+# ── Pinned downloads (acp-install#29) ─────────────────────────────────
+# Everything fetched from GitHub and executed later (the govern.mjs hook, the
+# harness hooks) is pinned to a commit AND verified against a sha256 embedded
+# here, before it is moved into place. A compromised branch, a repo takeover,
+# or a TLS-intercepting proxy can no longer turn `main` into persistent code
+# execution on every tool call. On any mismatch or fetch failure nothing is
+# installed from the network: govern.mjs falls back to the bundled copy below,
+# harness hooks print their manual path (the existing fail-open branch).
+#
+# BUMPING A PIN (after a plugin release): set the ref to the release commit,
+# then   curl -fsSL https://raw.githubusercontent.com/agentic-control-plane/<repo>/<ref>/<path> | shasum -a 256
+# and paste the digest. Hook fixes now reach machines with the installer
+# release (or `acp-update`, which re-runs this installer), not on every push.
+ACP_PIN_GOVERN_REPO="claude-code-acp-plugin"
+# Plugin 0.28.0 (main cb043a8e).
+ACP_PIN_GOVERN_REF="cb043a8e81f0d8382dba9e45a4e9ed7ec4c8606c"
+ACP_PIN_GOVERN_SHA="1ff4fd77ba62a23a24c81b7dcbd2c6c2c1a71393ff5df2b954c2028b969867a8"
+ACP_PIN_PI_REF="e27c427621c6a6c4948e95ca87cfd2c97c27c20d"
+ACP_PIN_PI_INDEX_SHA="cf8c50c0ed57c596f965be1a3f8a958d9a8b9b0dc9f8e1377e4286ca39e127c1"
+ACP_PIN_PRIME_REF="4043829b9acdaa2d258ca5237166fcc7910bfd14"
+ACP_PIN_PRIME_INDEX_SHA="d5090db76007e8ebb6f689ed2c7ee55a272fcdb0081617f0deb9c75d8957660d"
+ACP_PIN_GROK_REF="4710fc511d07346468758db780fafabf09cedede"
+ACP_PIN_GROK_HOOK_SHA="60b6fbe278066d6e7cdaaea77a353204756b06dd44816e649336e9888896d28c"
+ACP_PIN_GROK_JSON_SHA="7e5edd4a8615523548ce660d84fde45ef480ac26bda7fca53ecfd0bfcf011b27"
+ACP_PIN_AGY_REF="3fe9c68caa12ab5d37fcdc6f48ca6304cc0e04c7"
+ACP_PIN_AGY_HOOK_SHA="ef0e660b41a287f4da41a8770de757c4791dd089546f7ffbd9e85f9373acac8a"
+ACP_PIN_AGY_JSON_SHA="41b5e3b56e2d4c5f7ff221213dba96df636c5bfebeb085b42db16a23e30008ae"
+
+# sha256 of a file on stdout; empty (and nonzero) when no tool is available.
+_acp_sha256() {
+  if command -v shasum > /dev/null 2>&1; then shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v sha256sum > /dev/null 2>&1; then sha256sum "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v openssl > /dev/null 2>&1; then openssl dgst -sha256 "$1" 2>/dev/null | sed 's/^.*= *//'
+  elif command -v node > /dev/null 2>&1; then node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$1" 2>/dev/null
+  else return 1
+  fi
+}
+
+# _acp_fetch_pinned URL EXPECTED_SHA256 DEST
+# Download to a private temp file in DEST's own directory, hash THAT file, and
+# only then rename it over DEST (same filesystem, so the rename is atomic and
+# the bytes that were hashed are the bytes that land). Returns 0 only on a
+# verified install. On failure DEST is untouched and ACP_PIN_FAIL says why:
+# "download" (offline / 404 / no temp file) or "checksum" (bytes differ).
+ACP_PIN_FAIL=""
+_acp_fetch_pinned() {
+  _pf_url="$1"; _pf_want="$2"; _pf_dest="$3"
+  ACP_PIN_FAIL="download"
+  _pf_tmp="$(mktemp "$_pf_dest.XXXXXX" 2>/dev/null)" || return 1
+  if ! curl -fsSL --max-time 20 "$_pf_url" -o "$_pf_tmp" 2>/dev/null || [ ! -s "$_pf_tmp" ]; then
+    rm -f "$_pf_tmp"; return 1
+  fi
+  _pf_got="$(_acp_sha256 "$_pf_tmp")"
+  if [ -z "$_pf_got" ] || [ "$_pf_got" != "$_pf_want" ]; then
+    ACP_PIN_FAIL="checksum"
+    rm -f "$_pf_tmp"; return 1
+  fi
+  chmod 644 "$_pf_tmp" 2>/dev/null || true
+  mv -f "$_pf_tmp" "$_pf_dest" || { rm -f "$_pf_tmp"; ACP_PIN_FAIL="download"; return 1; }
+  ACP_PIN_FAIL=""
+  return 0
+}
+
+# One-line warning when a pinned download was REJECTED (not merely offline).
+_acp_pin_warn() {
+  [ "$ACP_PIN_FAIL" = "checksum" ] || return 0
+  echo "  ${C_RED}[ACP] WARNING:${C_RESET} $1 did not match its pinned sha256 — NOT installed. $2" >&2
+}
+
 # ── Detect available clients ──────────────────────────────────────────
 
 HAS_CLAUDE=false
@@ -544,10 +613,12 @@ fi
 if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected pi — installing the ACP extension…"
   PI_EXT_OK=false
-  if mkdir -p "$PI_EXT_DIR" 2>/dev/null && curl -sf \
-    https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts \
-    -o "$PI_EXT_DIR/acp.ts" 2>/dev/null && [ -s "$PI_EXT_DIR/acp.ts" ]; then
+  if mkdir -p "$PI_EXT_DIR" 2>/dev/null && _acp_fetch_pinned \
+    "https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/$ACP_PIN_PI_REF/index.ts" \
+    "$ACP_PIN_PI_INDEX_SHA" "$PI_EXT_DIR/acp.ts"; then
     PI_EXT_OK=true
+  else
+    _acp_pin_warn "the pi extension" "Skipping it."
   fi
   if [ "$PI_EXT_OK" = true ]; then
     echo "  ${C_GREEN}✓ pi governed${C_RESET} — extension written to ~/.pi/agent/extensions/acp.ts; active from the next pi session (needs Node 22)."
@@ -555,7 +626,7 @@ if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
     # Network refused or the extensions dir isn't writable — print the manual
     # path rather than guessing.
     echo "  Couldn't fetch automatically. Install it by hand:"
-    echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
+    echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/$ACP_PIN_PI_REF/index.ts -o ~/.pi/agent/extensions/acp.ts   # expected sha256: $ACP_PIN_PI_INDEX_SHA"
     echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
   fi
   echo ""
@@ -576,10 +647,12 @@ fi
 if [ "$HAS_PRIME" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected Prime Agent — installing the ACP extension…"
   PRIME_EXT_OK=false
-  if mkdir -p "$PRIME_EXT_DIR" 2>/dev/null && curl -sf \
-    https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts \
-    -o "$PRIME_EXT_DIR/acp.ts" 2>/dev/null && [ -s "$PRIME_EXT_DIR/acp.ts" ]; then
+  if mkdir -p "$PRIME_EXT_DIR" 2>/dev/null && _acp_fetch_pinned \
+    "https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/$ACP_PIN_PRIME_REF/index.ts" \
+    "$ACP_PIN_PRIME_INDEX_SHA" "$PRIME_EXT_DIR/acp.ts"; then
     PRIME_EXT_OK=true
+  else
+    _acp_pin_warn "the Prime Agent extension" "Skipping it."
   fi
   if [ "$PRIME_EXT_OK" = true ]; then
     echo "  ${C_GREEN}✓ Prime Agent governed${C_RESET} — extension written to ~/.prime/agent/extensions/acp.ts; active from the next session or /reload (needs Node 22.8+)."
@@ -587,7 +660,7 @@ if [ "$HAS_PRIME" = true ] && [ "$LOCAL_MODE" = false ]; then
     # Network refused or the extensions dir isn't writable — print the manual
     # path rather than guessing.
     echo "  Couldn't fetch automatically. Install it by hand:"
-    echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts -o ~/.prime/agent/extensions/acp.ts"
+    echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/$ACP_PIN_PRIME_REF/index.ts -o ~/.prime/agent/extensions/acp.ts   # expected sha256: $ACP_PIN_PRIME_INDEX_SHA"
     echo "  Guide: https://agenticcontrolplane.com/integrations/prime-agent"
   fi
   echo ""
@@ -647,11 +720,13 @@ fi
 if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected Grok Build — installing the ACP hook…"
   GROK_HOOK_OK=false
-  _grok_raw="https://raw.githubusercontent.com/agentic-control-plane/grok-build-acp-plugin/main"
+  _grok_raw="https://raw.githubusercontent.com/agentic-control-plane/grok-build-acp-plugin/$ACP_PIN_GROK_REF"
   if mkdir -p "$HOME/.acp/hooks/grok-build" "$HOME/.grok/hooks" 2>/dev/null \
-    && curl -fsSL "$_grok_raw/hook.mjs" -o "$HOME/.acp/hooks/grok-build/hook.mjs" 2>/dev/null \
-    && curl -fsSL "$_grok_raw/hooks/acp.json" -o "$HOME/.grok/hooks/acp.json" 2>/dev/null; then
+    && _acp_fetch_pinned "$_grok_raw/hook.mjs" "$ACP_PIN_GROK_HOOK_SHA" "$HOME/.acp/hooks/grok-build/hook.mjs" \
+    && _acp_fetch_pinned "$_grok_raw/hooks/acp.json" "$ACP_PIN_GROK_JSON_SHA" "$HOME/.grok/hooks/acp.json"; then
     GROK_HOOK_OK=true
+  else
+    _acp_pin_warn "a Grok Build hook file" "Hook not registered."
   fi
   if [ "$GROK_HOOK_OK" = true ]; then
     echo "  ${C_GREEN}✓ Grok Build governed${C_RESET} — hook registered user-globally; fires in every mode, always-approve included; active from the next Grok session."
@@ -659,8 +734,8 @@ if [ "$HAS_GROK" = true ] && [ "$LOCAL_MODE" = false ]; then
   else
     echo "  Couldn't finish automatically (curl refused or a directory wasn't writable). Run:"
     echo "    mkdir -p ~/.acp/hooks/grok-build ~/.grok/hooks"
-    echo "    curl -fsSL $_grok_raw/hook.mjs -o ~/.acp/hooks/grok-build/hook.mjs"
-    echo "    curl -fsSL $_grok_raw/hooks/acp.json -o ~/.grok/hooks/acp.json"
+    echo "    curl -fsSL $_grok_raw/hook.mjs -o ~/.acp/hooks/grok-build/hook.mjs   # expected sha256: $ACP_PIN_GROK_HOOK_SHA"
+    echo "    curl -fsSL $_grok_raw/hooks/acp.json -o ~/.grok/hooks/acp.json   # expected sha256: $ACP_PIN_GROK_JSON_SHA"
     echo "  Guide: https://agenticcontrolplane.com/integrations/grok-build"
   fi
   echo ""
@@ -676,13 +751,15 @@ fi
 if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected Google Antigravity — installing the ACP hook…"
   AGY_HOOK_OK=false
-  _agy_raw="https://raw.githubusercontent.com/agentic-control-plane/antigravity-acp-plugin/main"
+  _agy_raw="https://raw.githubusercontent.com/agentic-control-plane/antigravity-acp-plugin/$ACP_PIN_AGY_REF"
   if command -v node > /dev/null 2>&1 \
     && mkdir -p "$HOME/.acp/hooks/antigravity" "$HOME/.gemini/config" 2>/dev/null \
-    && curl -fsSL "$_agy_raw/hook.mjs" -o "$HOME/.acp/hooks/antigravity/hook.mjs" 2>/dev/null \
-    && curl -fsSL "$_agy_raw/hooks/acp.json" -o "$HOME/.acp/hooks/antigravity/acp.json" 2>/dev/null \
+    && _acp_fetch_pinned "$_agy_raw/hook.mjs" "$ACP_PIN_AGY_HOOK_SHA" "$HOME/.acp/hooks/antigravity/hook.mjs" \
+    && _acp_fetch_pinned "$_agy_raw/hooks/acp.json" "$ACP_PIN_AGY_JSON_SHA" "$HOME/.acp/hooks/antigravity/acp.json" \
     && node -e 'const fs=require("fs");const p=process.env.HOME+"/.gemini/config/hooks.json";let cur={};try{cur=JSON.parse(fs.readFileSync(p,"utf8"))}catch(e){};const add=JSON.parse(fs.readFileSync(process.env.HOME+"/.acp/hooks/antigravity/acp.json","utf8"));fs.writeFileSync(p,JSON.stringify(Object.assign(cur,add),null,2))' 2>/dev/null; then
     AGY_HOOK_OK=true
+  else
+    _acp_pin_warn "an Antigravity hook file" "Hook not registered."
   fi
   if [ "$AGY_HOOK_OK" = true ]; then
     echo "  ${C_GREEN}✓ Antigravity governed${C_RESET} — registration merged into the shared hooks.json (CLI, IDE, and app); ACP asks render as native force_ask prompt cards; active from the next session."
@@ -690,8 +767,8 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
   else
     echo "  Couldn't finish automatically (node/curl refused or a directory wasn't writable). Run:"
     echo "    mkdir -p ~/.acp/hooks/antigravity ~/.gemini/config"
-    echo "    curl -fsSL $_agy_raw/hook.mjs -o ~/.acp/hooks/antigravity/hook.mjs"
-    echo "    curl -fsSL $_agy_raw/hooks/acp.json -o ~/.acp/hooks/antigravity/acp.json"
+    echo "    curl -fsSL $_agy_raw/hook.mjs -o ~/.acp/hooks/antigravity/hook.mjs   # expected sha256: $ACP_PIN_AGY_HOOK_SHA"
+    echo "    curl -fsSL $_agy_raw/hooks/acp.json -o ~/.acp/hooks/antigravity/acp.json   # expected sha256: $ACP_PIN_AGY_JSON_SHA"
     echo "    node -e 'see https://agenticcontrolplane.com/integrations/antigravity#manual-install'"
     echo "  Guide: https://agenticcontrolplane.com/integrations/antigravity"
   fi
@@ -724,10 +801,10 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
   echo "    dsh plugin --profile <your-profile> add @agenticcontrolplane/dsh"
   echo "  Guide: https://github.com/agentic-control-plane/dsh-acp-plugin"
   echo "  pi (earendil-works)? A native extension file:"
-  echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/main/index.ts -o ~/.pi/agent/extensions/acp.ts"
+  echo "    mkdir -p ~/.pi/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/pi-acp-plugin/$ACP_PIN_PI_REF/index.ts -o ~/.pi/agent/extensions/acp.ts   # expected sha256: $ACP_PIN_PI_INDEX_SHA"
   echo "  Guide: https://agenticcontrolplane.com/integrations/pi"
   echo "  Prime Agent? Same idea, a native extension file:"
-  echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/main/index.ts -o ~/.prime/agent/extensions/acp.ts"
+  echo "    mkdir -p ~/.prime/agent/extensions && curl -sf https://raw.githubusercontent.com/agentic-control-plane/prime-agent-acp-plugin/$ACP_PIN_PRIME_REF/index.ts -o ~/.prime/agent/extensions/acp.ts   # expected sha256: $ACP_PIN_PRIME_INDEX_SHA"
   echo "  Guide: https://agenticcontrolplane.com/integrations/prime-agent"
   echo ""
   echo "  Install one first, then re-run this script."
@@ -791,18 +868,39 @@ mkdir -p "$CONFIG_DIR"
 # overwritten below — acp-update prints old -> new so a refresh is visible.
 GOVERN_OLD_VERSION="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$CONFIG_DIR/govern.mjs" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
 echo "  [ACP] Installing governance hook script..."
-GOVERN_RAW_URL="https://raw.githubusercontent.com/agentic-control-plane/claude-code-acp-plugin/main/bin/govern.mjs"
+GOVERN_RAW_URL="https://raw.githubusercontent.com/agentic-control-plane/$ACP_PIN_GOVERN_REPO/$ACP_PIN_GOVERN_REF/bin/govern.mjs"
 # In --local mode the fetched copy must actually carry the local decision
 # path (runLocal). A canonical copy without it would exit silently on every
 # call — "local mode active" with zero governance and zero audit. Never
 # brick, never silently: such a copy is rejected in favor of the bundled one.
-if curl -sf --max-time 10 "$GOVERN_RAW_URL" -o "$CONFIG_DIR/govern.mjs.tmp" 2>/dev/null \
-   && head -1 "$CONFIG_DIR/govern.mjs.tmp" | grep -q "node" \
-   && { [ "$LOCAL_MODE" = false ] || grep -q "runLocal" "$CONFIG_DIR/govern.mjs.tmp"; }; then
-  mv "$CONFIG_DIR/govern.mjs.tmp" "$CONFIG_DIR/govern.mjs"
-  GOVERN_SOURCE="canonical (plugin repo)"
+# Pinned (acp-install#29): fetched to a private temp file, sha256-verified
+# against ACP_PIN_GOVERN_SHA, then renamed into place. Offline, a 404, or a
+# checksum mismatch all land on the bundled copy below — never silently: a
+# rejected file warns, an unreachable one prints a one-line notice, and a
+# verified file that fails the sanity checks says which check. The install
+# never prompts and never fails here.
+GOVERN_FETCHED="$CONFIG_DIR/govern.mjs.pinned"
+rm -f "$GOVERN_FETCHED"
+GOVERN_PINNED_OK=false
+if _acp_fetch_pinned "$GOVERN_RAW_URL" "$ACP_PIN_GOVERN_SHA" "$GOVERN_FETCHED"; then
+  if ! head -1 "$GOVERN_FETCHED" | grep -q "node"; then
+    echo "  ${C_RED}[ACP] WARNING:${C_RESET} pinned govern.mjs verified but has no node shebang — using the bundled copy." >&2
+  elif [ "$LOCAL_MODE" = true ] && ! grep -q "runLocal" "$GOVERN_FETCHED"; then
+    echo "  ${C_RED}[ACP] WARNING:${C_RESET} pinned govern.mjs verified but lacks the local decision path (runLocal) — using the bundled copy so --local keeps governing." >&2
+  elif mv -f "$GOVERN_FETCHED" "$CONFIG_DIR/govern.mjs"; then
+    GOVERN_PINNED_OK=true
+  else
+    echo "  ${C_RED}[ACP] WARNING:${C_RESET} could not move the verified govern.mjs into place — using the bundled copy." >&2
+  fi
+elif [ "$ACP_PIN_FAIL" = "checksum" ]; then
+  _acp_pin_warn "govern.mjs" "Using the bundled copy instead."
 else
-  rm -f "$CONFIG_DIR/govern.mjs.tmp"
+  echo "  ${C_DIM}[ACP] pinned govern.mjs unavailable, using bundled copy${C_RESET}" >&2
+fi
+if [ "$GOVERN_PINNED_OK" = true ]; then
+  GOVERN_SOURCE="canonical (plugin repo, pinned + sha256-verified)"
+else
+  rm -f "$GOVERN_FETCHED"
   GOVERN_SOURCE="bundled fallback"
   cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
 #!/usr/bin/env node
@@ -3146,9 +3244,12 @@ if [ -n "$DEVICE_CODE" ]; then
 
   # Writes the key itself on success. Progress goes to stderr so stdout
   # stays clean for anything piping this installer.
-  if node -e '
+  if printf '%s' "$DEVICE_CODE" | node -e '
     const fs = require("fs");
-    const [API, deviceCode, credsFile, budget, interval] = process.argv.slice(1);
+    // The device code arrives on stdin, never argv: argv is world-readable
+    // via ps, and anyone who reads the code can race us for the minted key.
+    const [API, credsFile, budget, interval] = process.argv.slice(1);
+    const deviceCode = fs.readFileSync(0, "utf8").trim();
     const deadline = Date.now() + Number(budget) * 1000;
     let wait = Number(interval) * 1000;
     (async () => {
@@ -3174,7 +3275,7 @@ if [ -n "$DEVICE_CODE" ]; then
       }
       process.exit(1);
     })();
-  ' "$API_BASE" "$DEVICE_CODE" "$CREDS_FILE" "$DEVICE_BUDGET" "$DEVICE_INTERVAL"; then
+  ' "$API_BASE" "$CREDS_FILE" "$DEVICE_BUDGET" "$DEVICE_INTERVAL"; then
     KEY_SEEN=true
   fi
 else
