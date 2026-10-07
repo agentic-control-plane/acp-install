@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Harness canary assertions. Two subcommands:
+// Harness canary assertions. Three subcommands:
 //
 //   invariants --harness <id>
 //     The installer wrote exactly what it should for this harness, once.
+//     This is the whole canary for claude-code and codex (no live call).
 //
 //   audit --harness <id> --since <iso Z> [--marker <m>] [--timeout <s>]
 //     A governed tool-call row for this harness landed in ACP's audit log
@@ -10,6 +11,14 @@
 //     uses); needs ACP_CANARY_KEY with the admin.audit.read scope.
 //     ACP_TENANT_SLUG is required: production is multi-tenant and the
 //     route is /<slug>/admin/audit (a bare /admin/audit is read as a slug).
+//     On FAIL it prints every row seen in the window with its `decision`.
+//
+//   rows --harness <id> --since <iso Z>
+//     One GET, then print every audit row in the window with its
+//     `decision` (used by the opencode leg when the harness rejected the
+//     call, so gsc#1380 can be classified: allow = plugin/opencode contract
+//     drift, ask = the gateway is asking in audit mode). Never exits 1 on
+//     an empty window; it is a dump, not an assertion.
 //
 // The audit API returns no argument preview, so the marker cannot be read
 // back from the row. The match is: ts >= since, client string belongs to
@@ -94,17 +103,29 @@ function invariants() {
   }
 }
 
-// Client strings the gateway records for each harness (see
-// install.sh ACP_CLIENT=... and the plugins). opencode's npm plugin owns
-// its own string, so that one is matched loosely.
+// Client strings the gateway records for each harness. The hooks send
+// X-GS-Client as `<ACP_CLIENT>/<version>` (govern.mjs: claude-code-plugin/
+// 0.26.0, codex/0.26.0; the opencode npm plugin: opencode-plugin/0.4.0), so
+// match on the prefix, never on the whole string. The audit API returns
+// `client` as an object ({ name, version }), not a string.
 const CLIENT_MATCH = {
-  "claude-code": /^claude-code-plugin$|^claude-cli$/,
-  codex: /^codex(-mcp)?$/,
+  "claude-code": /^(claude-code|claude-cli)/,
+  codex: /^codex/,
   opencode: /opencode/i,
 };
 const TOOL_MATCH = /bash|shell|echo|exec/i;
+const clientName = (e) => {
+  const c = e?.client;
+  if (typeof c === "string") return c;
+  if (c && typeof c === "object") return String(c.name ?? c.id ?? "");
+  return "";
+};
+const rowSummary = (e) => JSON.stringify({ ts: e.ts, client: clientName(e), tool: e.tool, toolRaw: e.toolRaw, decision: e.decision, outcome: e.outcome });
 
-async function audit() {
+const MAX_ROWS_PRINTED = 50;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function auditTarget() {
   const key = process.env.ACP_CANARY_KEY;
   if (!key) { console.error("ACP_CANARY_KEY is not set"); process.exit(2); }
   const base = (process.env.ACP_BASE_URL || "https://api.agenticcontrolplane.com").replace(/\/$/, "");
@@ -112,53 +133,90 @@ async function audit() {
   if (!slug) { console.error("ACP_TENANT_SLUG is not set (the production gateway is multi-tenant: /<slug>/admin/audit)"); process.exit(2); }
   const since = opt("since");
   if (!since) { console.error("--since <iso> is required"); process.exit(2); }
-  const timeoutMs = Number(opt("timeout", "120")) * 1000;
-  const marker = opt("marker", "");
   const url = new URL(`${base}/${slug}/admin/audit`);
   url.searchParams.set("since", since);
   url.searchParams.set("limit", "500");
+  return { key, since, url };
+}
+
+// One GET of the window. Returns { status, entries } or { error }.
+async function fetchWindow({ key, url }) {
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "X-GS-Client": `harness-canary/${harness}` },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    return { error: e?.message ?? String(e) };
+  }
+  if (res.status === 401 || res.status === 403) {
+    console.error(`FAIL audit GET ${res.status}: the canary key needs the admin.audit.read scope`);
+    process.exit(1);
+  }
+  if (!res.ok) return { status: res.status, error: (await res.text().catch(() => "")).slice(0, 200) };
+  const body = await res.json().catch(() => ({}));
+  return { status: res.status, entries: Array.isArray(body.entries) ? body.entries : [] };
+}
+
+function printRows(entries) {
+  if (!entries.length) { console.log("  (no audit rows in the window)"); return; }
+  for (const e of entries.slice(0, MAX_ROWS_PRINTED)) console.log(`  ${rowSummary(e)}`);
+  if (entries.length > MAX_ROWS_PRINTED) console.log(`  ... ${entries.length - MAX_ROWS_PRINTED} more`);
+}
+
+async function audit() {
+  const target = auditTarget();
+  const { since } = target;
+  const timeoutMs = Number(opt("timeout", "120")) * 1000;
+  const marker = opt("marker", "");
 
   const deadline = Date.now() + timeoutMs;
-  let lastSeen = { count: 0, clients: new Set(), tools: new Set(), status: null };
+  let lastSeen = { status: null, entries: [] };
   while (Date.now() < deadline) {
-    let res;
-    try {
-      res = await fetch(url, {
-        headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "X-GS-Client": `harness-canary/${harness}` },
-        signal: AbortSignal.timeout(15000),
-      });
-    } catch (e) {
-      console.log(`audit GET failed: ${e?.message ?? e}; retrying`);
-      await new Promise((r) => setTimeout(r, 5000));
+    const got = await fetchWindow(target);
+    if (got.status) lastSeen.status = got.status;
+    if (got.error !== undefined) {
+      console.log(`audit GET ${got.status ?? "failed"}: ${got.error}; retrying`);
+      await sleep(5000);
       continue;
     }
-    lastSeen.status = res.status;
-    if (res.status === 401 || res.status === 403) {
-      console.error(`FAIL audit GET ${res.status}: the canary key needs the admin.audit.read scope`);
-      process.exit(1);
-    }
-    if (res.ok) {
-      const body = await res.json().catch(() => ({}));
-      const entries = Array.isArray(body.entries) ? body.entries : [];
-      lastSeen.count = entries.length;
-      for (const e of entries) { if (e.client) lastSeen.clients.add(String(e.client)); if (e.tool) lastSeen.tools.add(String(e.tool)); }
-      const hit = entries.find((e) =>
-        String(e.ts ?? "") >= since &&
-        CLIENT_MATCH[harness].test(String(e.client ?? "")) &&
-        (TOOL_MATCH.test(String(e.tool ?? "")) || TOOL_MATCH.test(String(e.toolRaw ?? ""))));
-      if (hit) {
-        console.log(`ok   audit row landed for ${harness}${marker ? ` (run ${marker})` : ""}:`);
-        console.log(JSON.stringify({ id: hit.id, ts: hit.ts, tool: hit.tool, toolRaw: hit.toolRaw, client: hit.client, decision: hit.decision, outcome: hit.outcome, sessionId: hit.sessionId }, null, 2));
-        return;
+    lastSeen.entries = got.entries;
+    const hit = got.entries.find((e) =>
+      String(e.ts ?? "") >= since &&
+      CLIENT_MATCH[harness].test(clientName(e)) &&
+      (TOOL_MATCH.test(String(e.tool ?? "")) || TOOL_MATCH.test(String(e.toolRaw ?? ""))));
+    if (hit) {
+      console.log(`ok   audit row landed for ${harness}${marker ? ` (run ${marker})` : ""}:`);
+      console.log(JSON.stringify({ id: hit.id, ts: hit.ts, tool: hit.tool, toolRaw: hit.toolRaw, client: hit.client, decision: hit.decision, outcome: hit.outcome, sessionId: hit.sessionId }, null, 2));
+      if (hit.decision && !/allow/i.test(String(hit.decision))) {
+        console.log(`note decision=${hit.decision}: the row landed, but the gateway did not pre-approve this call (gsc#1380: ask in audit mode)`);
       }
-    } else {
-      console.log(`audit GET ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}; retrying`);
+      return;
     }
-    await new Promise((r) => setTimeout(r, 5000));
+    await sleep(5000);
   }
+  const clients = new Set(), tools = new Set();
+  for (const e of lastSeen.entries) { const c = clientName(e); if (c) clients.add(c); if (e.tool) tools.add(String(e.tool)); }
   console.error(`FAIL no audit row for ${harness} since ${since} within ${timeoutMs / 1000}s ` +
-    `(last GET ${lastSeen.status}; ${lastSeen.count} rows in window; clients=[${[...lastSeen.clients].join(", ")}]; tools=[${[...lastSeen.tools].slice(0, 10).join(", ")}])`);
+    `(last GET ${lastSeen.status}; ${lastSeen.entries.length} rows in window; clients=[${[...clients].join(", ")}]; tools=[${[...tools].slice(0, 10).join(", ")}])`);
+  console.error("rows seen in the window (decision per row):");
+  printRows(lastSeen.entries);
   process.exit(1);
+}
+
+async function rows() {
+  const target = auditTarget();
+  let got = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    got = await fetchWindow(target);
+    if (got.error === undefined) break;
+    console.log(`audit GET ${got.status ?? "failed"}: ${got.error}; retrying`);
+    await sleep(3000);
+  }
+  if (!got || got.error !== undefined) { console.error("could not read the audit window"); process.exit(2); }
+  console.log(`${got.entries.length} audit row(s) for ${harness} since ${target.since}:`);
+  printRows(got.entries);
 }
 
 if (sub === "invariants") {
@@ -166,7 +224,9 @@ if (sub === "invariants") {
   if (failures.length) { console.error(`\n${failures.length} invariant(s) failed`); process.exit(1); }
 } else if (sub === "audit") {
   await audit();
+} else if (sub === "rows") {
+  await rows();
 } else {
-  console.error("usage: canary-assert.mjs <invariants|audit> ...");
+  console.error("usage: canary-assert.mjs <invariants|audit|rows> ...");
   process.exit(2);
 }

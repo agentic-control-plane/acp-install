@@ -1,12 +1,17 @@
-# Harness canary — proves the released ACP install still governs the
+# Harness canary — proves the released ACP install still wires into the
 # CURRENT released Claude Code, Codex and opencode, with nobody watching.
 #
 # Every 6 hours (and on demand, and when a harness-release event arrives)
 # each matrix leg installs the harness fresh, installs ACP through the live
-# installer with a pre-seeded key (no device flow), pushes exactly one
-# governed tool call through the harness, and asserts the audit row landed
-# in ACP. Failures file or update one deduped issue per harness in
-# davidcrowe/gatewaystack-connect; successes close any open canary issue.
+# installer with a pre-seeded key (no device flow) and asserts the install
+# invariants. The opencode leg goes further: it pushes exactly one governed
+# tool call through `opencode-acp run` (model calls ride ACP's proxy on the
+# platform Gemini key, so no vendor key is needed) and asserts the audit
+# row landed in ACP. The claude-code and codex legs stop at the invariants:
+# their live calls would need vendor (Anthropic / OpenAI) keys, which the
+# canary does not carry by decision. Failures file or update one deduped
+# issue per harness in davidcrowe/gatewaystack-connect; a fully green leg
+# closes any open canary issue for that harness.
 # Setup, secrets and the workspace flag: docs/harness-canary.md.
 
 name: harness-canary
@@ -102,39 +107,37 @@ jobs:
         id: invariants
         run: node scripts/canary-assert.mjs invariants --harness "$HARNESS" 2>&1 | tee canary-invariants.log
 
-      - name: One governed tool call (Claude Code)
-        id: call_claude
-        if: matrix.harness == 'claude-code'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          set -eo pipefail
-          test -n "$ANTHROPIC_API_KEY" || { echo "ANTHROPIC_API_KEY secret is not set"; exit 2; }
-          timeout 300 "$HOME/.acp/bin/claude-acp" -p "Run exactly: echo $MARKER" \
-            --model haiku --allowedTools "Bash(echo:*)" --output-format json 2>&1 | tee canary-run.log
-
-      - name: One governed tool call (Codex)
-        id: call_codex
-        if: matrix.harness == 'codex'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -eo pipefail
-          test -n "$OPENAI_API_KEY" || { echo "OPENAI_API_KEY secret is not set (the acp provider has requires_openai_auth = true)"; exit 2; }
-          timeout 300 "$HOME/.acp/bin/codex-acp" exec --full-auto --skip-git-repo-check \
-            "Run exactly: echo $MARKER" 2>&1 | tee canary-run.log
-
-      - name: One governed tool call (opencode)
-        id: call_opencode
+      # Live leg: opencode only. The claude-code and codex legs end at the
+      # invariants above (their live calls need vendor keys; see the docs).
+      - name: One governed tool call (opencode, via ACP's Gemini)
+        id: call
         if: matrix.harness == 'opencode'
+        env:
+          ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
+          ACP_TENANT_SLUG: ${{ vars.ACP_CANARY_TENANT_SLUG }}
         run: |
-          set -eo pipefail
+          set -o pipefail
           # Model calls ride the ACP proxy (acp/gemini-3.5-flash) with the
           # seeded key, so no provider secret is needed for this leg.
           timeout 300 "$HOME/.acp/bin/opencode-acp" run "Run exactly: echo $MARKER" 2>&1 | tee canary-run.log
+          rc=$?
+          # gsc#1380: headless opencode rejecting the governed call is a
+          # product bug, not a pass. Fail the step and dump every audit row
+          # in the window with its decision so the failure can be classified
+          # (decision=allow -> plugin/opencode permission contract drift;
+          # decision=ask -> the gateway is asking in audit mode).
+          if grep -Eiq 'auto-rejecting|rejected permission' canary-run.log; then
+            echo "FAIL opencode rejected the governed call (gsc#1380):"
+            grep -Ei 'auto-rejecting|rejected permission' canary-run.log
+            echo "audit rows seen since $CANARY_SINCE (decision per row):"
+            node scripts/canary-assert.mjs rows --harness "$HARNESS" --since "$CANARY_SINCE" || true
+            exit 1
+          fi
+          exit "$rc"
 
       - name: Assert the audit row landed in ACP
         id: audit
+        if: always() && matrix.harness == 'opencode' && steps.call.outcome != 'skipped'
         env:
           ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
           ACP_TENANT_SLUG: ${{ vars.ACP_CANARY_TENANT_SLUG }}
@@ -143,6 +146,10 @@ jobs:
           test -n "$ACP_TENANT_SLUG" || { echo "ACP_CANARY_TENANT_SLUG repository variable is not set"; exit 2; }
           node scripts/canary-assert.mjs audit --harness "$HARNESS" --since "$CANARY_SINCE" --marker "$MARKER" --timeout 120 2>&1 | tee canary-audit.log
 
+      # The step list is per harness: opencode owns `call` + `audit`; the
+      # other two end at `invariants`. A leg is green only when EVERY step
+      # on its list has outcome=success (skipped or cancelled is not green),
+      # so a skipped step can never close an open issue.
       - name: File, update or close the canary issue
         if: always()
         env:
@@ -153,17 +160,22 @@ jobs:
           O_SEED: ${{ steps.seed.outcome }}
           O_INSTALL: ${{ steps.acp_install.outcome }}
           O_INVARIANTS: ${{ steps.invariants.outcome }}
-          O_CALL: ${{ steps.call_claude.outcome }}${{ steps.call_codex.outcome }}${{ steps.call_opencode.outcome }}
+          O_CALL: ${{ steps.call.outcome }}
           O_AUDIT: ${{ steps.audit.outcome }}
         run: |
           set -e
-          failed=""; log=""
-          for pair in "install-harness:$O_HARNESS:" "seed-credentials:$O_SEED:" "install-acp:$O_INSTALL:acp-install.log" \
-                      "install-invariants:$O_INVARIANTS:canary-invariants.log" "governed-call:$O_CALL:canary-run.log" \
-                      "audit-row:$O_AUDIT:canary-audit.log"; do
-            name="${pair%%:*}"; rest="${pair#*:}"; outcome="${rest%%:*}"; file="${rest#*:}"
-            if [ "$outcome" = "failure" ] && [ -z "$failed" ]; then failed="$name"; log="$file"; fi
+          steps="install-harness:$O_HARNESS: seed-credentials:$O_SEED: install-acp:$O_INSTALL:acp-install.log install-invariants:$O_INVARIANTS:canary-invariants.log"
+          if [ "$HARNESS" = "opencode" ]; then
+            steps="$steps governed-call:$O_CALL:canary-run.log,canary-audit.log audit-row:$O_AUDIT:canary-run.log,canary-audit.log"
+          fi
+          failed=""; log=""; status=success
+          for triple in $steps; do
+            name="${triple%%:*}"; rest="${triple#*:}"; outcome="${rest%%:*}"; file="${rest#*:}"
+            echo "$name: $outcome"
+            if [ "$outcome" != "success" ]; then
+              status=failure
+              if [ -z "$failed" ]; then failed="$name"; log="$file"; fi
+            fi
           done
-          if [ -n "$failed" ]; then status=failure; else status=success; fi
           node scripts/canary-report.mjs --harness "$HARNESS" --status "$status" --version "$HARNESS_VERSION" \
             --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"}

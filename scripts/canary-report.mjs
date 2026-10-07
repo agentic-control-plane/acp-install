@@ -67,12 +67,18 @@ async function gh(method, path, body) {
   return res.json();
 }
 
+// --log takes one file or a comma-separated list; each present file gets
+// its own collapsed excerpt (the harness transcript plus the audit poll).
 function logExcerpt() {
   if (!logFile) return "";
-  let text = "";
-  try { text = fs.readFileSync(logFile, "utf8"); } catch { return ""; }
-  if (text.length > MAX_LOG_CHARS) text = "...\n" + text.slice(-MAX_LOG_CHARS);
-  return `\n<details><summary>Log excerpt (${logFile})</summary>\n\n\`\`\`\n${text.replace(/`/g, "'")}\n\`\`\`\n</details>\n`;
+  let out = "";
+  for (const file of logFile.split(",").map((s) => s.trim()).filter(Boolean)) {
+    let text = "";
+    try { text = fs.readFileSync(file, "utf8"); } catch { continue; }
+    if (text.length > MAX_LOG_CHARS) text = "...\n" + text.slice(-MAX_LOG_CHARS);
+    out += `\n<details><summary>Log excerpt (${file})</summary>\n\n\`\`\`\n${text.replace(/`/g, "'")}\n\`\`\`\n</details>\n`;
+  }
+  return out;
 }
 
 async function findOpenIssue() {
@@ -105,7 +111,9 @@ async function main() {
         `- Harness version: \`${version}\``,
         `- ${runLine}`,
         "",
-        "The canary installs the current released harness, installs ACP via the live installer with a seeded key, pushes one governed `echo` through the harness and asserts the audit row landed. This issue is updated on every failing run and closed automatically on the next green run.",
+        harness === "opencode"
+          ? "The canary installs the current released harness, installs ACP via the live installer with a seeded key, asserts the install invariants, pushes one governed `echo` through `opencode-acp run` (ACP's Gemini via the proxy) and asserts the audit row landed. A transcript containing `auto-rejecting` / `rejected permission` fails the governed-call step (gsc#1380); the audit rows in the window are printed with their `decision` so it can be classified. This issue is updated on every failing run and closed automatically on the next run where every step is green."
+          : "The canary installs the current released harness, installs ACP via the live installer with a seeded key and asserts the install invariants (plugin/hook wired exactly once, launcher executable). This leg has no live governed call: that needs a vendor model key the canary does not carry. This issue is updated on every failing run and closed automatically on the next run where every step is green.",
         logExcerpt(),
       ].join("\n"),
     });
