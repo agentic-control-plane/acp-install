@@ -10,14 +10,30 @@
 // governance-anthropic re-exports governed/withContext/configure/getContext
 // from @agenticcontrolplane/governance but NOT getConfig (0.2.1), so the
 // version comes from the package manifest and the base URL from env.
-import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { configure, governHandlers, withContext } from "@agenticcontrolplane/governance-anthropic";
 
 const key = process.env.ACP_CANARY_KEY;
 if (!key) { console.error("ACP_CANARY_KEY is not set"); process.exit(2); }
 const marker = process.env.MARKER || `acp-canary-local-${Date.now()}`;
-const require = createRequire(import.meta.url);
-const version = require("@agenticcontrolplane/governance-anthropic/package.json").version || "unknown";
+// The package "exports" map has no "./package.json" subpath (0.2.x), so
+// require(".../package.json") throws ERR_PACKAGE_PATH_NOT_EXPORTED. Resolve
+// the allowed main entry, then walk up to the manifest on disk.
+function pkgVersion() {
+  try {
+    let dir = dirname(fileURLToPath(import.meta.resolve("@agenticcontrolplane/governance-anthropic")));
+    for (let i = 0; i < 6; i++, dir = dirname(dir)) {
+      try {
+        const m = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+        if (m.name === "@agenticcontrolplane/governance-anthropic") return m.version || "unknown";
+      } catch {}
+    }
+  } catch {}
+  return "unknown";
+}
+const version = pkgVersion();
 configure({ baseUrl: process.env.ACP_BASE_URL || "https://api.agenticcontrolplane.com", clientHeader: `acp-canary-sdk-governance-anthropic/${version}` });
 
 let lapse = "";
