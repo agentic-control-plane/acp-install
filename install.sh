@@ -54,6 +54,18 @@ set -e
 #
 # ─────────────────────────────────────────────────────────────────────
 
+# Everything below runs inside ONE brace group, closed by the final `}`.
+# `curl | bash` feeds this script to bash on stdin, and bash executes it as
+# it reads it. Any child that reads stdin (pipx, pip, hermes, dsh, npm, muse,
+# claude...) then consumes the unread REST OF THE SCRIPT, and bash resumes
+# at a random offset: harness canary 2026-10-08 printed the tail of the Muse
+# fallback text and died with `syntax error near unexpected token fi` (exit 2)
+# right after Hermes installed (gsc#1394). A compound command is parsed in
+# full before any of it runs, so by the time a child starts there is nothing
+# left on stdin to steal. A truncated download is now a syntax error with no
+# side effects, instead of a half-run install.
+{
+
 API_BASE="${ACP_API_BASE:-https://api.agenticcontrolplane.com}"
 DASHBOARD_BASE="${ACP_DASHBOARD_BASE:-https://cloud.agenticcontrolplane.com}"
 SITE_BASE="${ACP_SITE_BASE:-https://agenticcontrolplane.com}"
@@ -3455,3 +3467,5 @@ if [ "${ACP_UNGOVERNED:-false}" = true ]; then
   exit 2
 fi
 exit 0
+
+}
