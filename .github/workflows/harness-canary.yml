@@ -13,11 +13,17 @@
 # issue for that leg. Coverage table, secrets and the workspace flag:
 # docs/harness-canary.md.
 #
-# Drift pairing: the drift scout (gatewaystack-connect, apps/tenant-gateway/
-# src/drift) dispatches `harness-release` with client_payload
-# {harness, drift_issue, version, drift_kind, close_on_pass} when an upstream
-# release signal moves; the reporter then comments the verdict on that drift
-# issue and, for release-type drift, closes it on a pass.
+# Drift sweep: the drift scout (gatewaystack-connect, apps/tenant-gateway/
+# src/drift) files one `drift` issue per upstream release with the marker
+# `<!-- drift-scout:key=release:<entryId>@<version> -->`. No dispatch token:
+# after each leg reports, scripts/canary-report.mjs lists the open `drift`
+# issues and resolves the ones for this leg's registry entries at the
+# version the run just tested (pass -> comment + close; fail -> one comment
+# per failure). The scheduled run therefore answers a release issue within
+# ~6 h. SDK legs pass the upstream versions they installed as --tested
+# pairs, since their own --version is the ACP package's. Dispatch pairing
+# (repository_dispatch harness-release with client_payload.drift_issue) is
+# still honoured for runs triggered by hand.
 #
 # Live legs (one governed `echo <marker>`, then the audit-row assert):
 #   claude-code  claude-acp -p, BYO subscription OAuth (CLAUDE_CODE_OAUTH_TOKEN)
@@ -340,6 +346,19 @@ jobs:
           esac
           echo "resolved: $v"
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          # Upstream versions this leg actually installed, as drift-registry
+          # entryId=version pairs, so the reporter's drift sweep can match
+          # the scout's release issues (its own version above is the ACP
+          # package's). Entry ids and leg mapping: registry.ts canaryLeg.
+          pyver() { pip show "$1" 2>/dev/null | sed -n 's/^Version: //p' || true; }
+          u=""
+          case "$LEG" in
+            sdk-langchain)            u="langchain-core=$(pyver langchain-core),langgraph=$(pyver langgraph)" ;;
+            sdk-crewai)               u="crewai=$(pyver crewai)" ;;
+            sdk-governance-anthropic) u="anthropic-sdk-typescript=$(npm ls @anthropic-ai/sdk --depth=1 2>/dev/null | grep -o '@anthropic-ai/sdk@[0-9.]*' | head -1 | sed 's/.*@//' || true)" ;;
+          esac
+          echo "upstream: ${u:-(none mapped)}"
+          echo "upstream=$u" >> "$GITHUB_OUTPUT"
           echo "CANARY_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
 
       - name: One governed tool-call check
@@ -372,6 +391,7 @@ jobs:
           CANARY_ISSUES_TOKEN: ${{ secrets.CANARY_ISSUES_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PKG_VERSION: ${{ steps.pkg.outputs.version }}
+          UPSTREAM_VERSIONS: ${{ steps.pkg.outputs.upstream }}
           DRIFT_ISSUE: ${{ github.event.client_payload.drift_issue || '' }}
           DRIFT_VERSION: ${{ github.event.client_payload.version || '' }}
           DRIFT_KIND: ${{ github.event.client_payload.drift_kind || '' }}
@@ -394,5 +414,6 @@ jobs:
           done
           node scripts/canary-report.mjs --harness "$LEG" --status "$status" --version "$PKG_VERSION" \
             --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"} \
+            ${UPSTREAM_VERSIONS:+--tested "$UPSTREAM_VERSIONS"} \
             ${DRIFT_ISSUE:+--drift-issue "$DRIFT_ISSUE"} ${DRIFT_VERSION:+--drift-version "$DRIFT_VERSION"} \
             ${DRIFT_KIND:+--drift-kind "$DRIFT_KIND"} ${DRIFT_CLOSE:+--drift-close "$DRIFT_CLOSE"}

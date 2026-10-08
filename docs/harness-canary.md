@@ -114,30 +114,61 @@ Triggers: `schedule: 13 */6 * * *`, `workflow_dispatch` (input `harness`:
 `harness-release` (optional `client_payload.harness`, same values).
 Concurrency is per leg; legs do not cancel each other.
 
-### Drift pairing
+### Drift sweep (how a drift issue gets resolved)
 
 The drift scout (gatewaystack-connect, `apps/tenant-gateway/src/drift/`,
-`docs/drift-scout.md` there) sends the `harness-release` dispatch when an
-upstream release signal (npm latest, GitHub release/tag, PyPI) of a harness
-or SDK moves, with `client_payload`
-`{harness, drift_issue, version, drift_kind: "release"|"docs", close_on_pass}`.
-The workflow passes those through to the reporter as `--drift-issue`,
-`--drift-version`, `--drift-kind`, `--drift-close`, and the reporter comments
-the verdict on that drift issue in `davidcrowe/gatewaystack-connect`:
+`docs/drift-scout.md` there) files **one issue per upstream release** in
+`davidcrowe/gatewaystack-connect` when a release signal (npm latest, GitHub
+release/tag, PyPI) of a harness or SDK moves: label `drift`, body marker
+`<!-- drift-scout:key=release:<entryId>@<version> -->`. It does not trigger
+the canary. **The scheduled canary resolves matching drift issues within
+~6 h; no extra token.** Each leg installs `@latest`, so by the next scheduled
+run it is testing exactly the version the scout saw.
 
-- pass: `Canary <leg> on <version>: ✅ passed: safe to close` and, when
-  closing is on, closes the drift issue (`state_reason: completed`);
-- fail: `Canary <leg> on <version>: ❌ failed at <step>: see <canary issue>`
-  (the run URL when no canary issue exists).
+After every leg reports, `scripts/canary-report.mjs` lists the open `drift`
+issues, keeps the ones whose release marker names a registry entry mapped to
+this leg (`LEG_ENTRIES` in the script mirrors `canaryLeg` in the scout's
+`registry.ts`: `claude-code`, `codex`, `opencode`, `qwen-code`, `pi`,
+`prime-agent`, `grok`, `dsh`, `hermes`, `openclaw`, `muse` map to the leg of
+the same name; `crewai` to `sdk-crewai`; `langchain-core` and `langgraph` to
+`sdk-langchain`; `anthropic-sdk-typescript` to `sdk-governance-anthropic`)
+and whose normalised version (first dotted number, the scout's
+`normalizeVersion` rule, so `v1.1.0`, `rust-v1.1.0`, `1.1.0 (Claude Code)`
+all read `1.1.0`) equals the version this run tested, and posts the verdict:
 
-Closing on pass defaults ON for `drift_kind: release` (the only kind the scout
-dispatches) and OFF for `drift_kind: docs`; `close_on_pass: false` in the
-payload (or `--drift-close off`) turns it off either way. The drift comment is
-best effort: a failure there is logged and never fails the reporter, so the
-canary issue stays the primary record. `CANARY_ISSUES_TOKEN` already covers
-it (same repo, Issues: read and write). The scout's own dispatch credential
-(`CANARY_DISPATCH_TOKEN`, Actions: read and write on this repo) is documented
-in gatewaystack-connect `docs/drift-scout.md`.
+- pass: `Canary <leg> on <version>: ✅ passed — closing.` and closes the
+  issue (`state_reason: completed`);
+- fail: `Canary <leg> on <version>: ❌ failed at <step>: <canary issue or
+  run link>`, once per failure: when the reporter's last verdict comment on
+  that issue already says failed for the same version, a later red run on
+  the same version does not repeat it.
+
+Docs-type drift issues (markers that are not `release:`) are left alone: a
+green canary says nothing about a changed docs page. For harness legs the
+tested version is the harness's own `--version` output. For SDK legs the
+`--version` is the ACP package's, so the `install-package` step also records
+the upstream versions it installed (`langchain-core`, `langgraph`, `crewai`,
+`@anthropic-ai/sdk`) and passes them as `--tested entryId=version,...`; an
+SDK entry with no recorded version is skipped. The sweep is best effort: a
+failure there is logged and never fails the reporter, so the canary issue
+stays the primary record. `CANARY_ISSUES_TOKEN` covers it (same repo,
+Issues: read and write).
+
+Dispatch pairing is kept for hand-triggered runs: a `repository_dispatch`
+`harness-release` with `client_payload`
+`{harness, drift_issue, version, drift_kind: "release"|"docs", close_on_pass}`
+reaches the reporter as `--drift-issue`, `--drift-version`, `--drift-kind`,
+`--drift-close`, and the verdict is posted on that issue (closed on pass for
+`release` drift unless `close_on_pass: false`); the sweep skips that issue
+so it is not commented twice.
+
+Preview the sweep locally with a fixture (`{drift: [...], canary: [...],
+comments: [...]}` is what dry-run `GET`s return):
+
+```
+node scripts/canary-report.mjs --harness qwen-code --status success --version "0.9.0 (Qwen Code)" \
+  --run-url https://example.invalid/run --dry-run --fixture fixture.json
+```
 
 ## Secrets (repository secrets on agentic-control-plane/acp-install)
 
