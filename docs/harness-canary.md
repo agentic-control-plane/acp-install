@@ -216,8 +216,10 @@ tenant doc before the first scheduled run.
   installer only checks `opencode --help` for `--model`. If the released
   opencode rejects a global `--model`, that leg fails at `governed-call` and
   the issue says so. The installer also sets `permission.bash = "ask"` in
-  `opencode.json`; headless `opencode run` relies on the `acp-opencode`
-  plugin to answer that ask.
+  `opencode.json`; headless `opencode run` auto-rejects an unanswered ask, so
+  the canary pre-approves `echo *` via `OPENCODE_CONFIG_CONTENT` for its own
+  process (see the opencode row under the failure table). That means the leg
+  proves the plugin's audit row, not the `permission.ask` allow path.
 - Headless `-p` on qwen-code, pi and prime-agent runs the shell call only if
   the hook's `allow` is honoured as the permission decision; if the harness
   still asks, the transcript shows the rejection and the leg goes red with
@@ -262,7 +264,7 @@ sdk-pydantic-ai) were green.
 | `hermes` | Installer exit 23. `install.sh` greps `pipx list` for `package hermes`, which matches `hermes-agent`, then runs `pipx inject hermes ...` against a venv that is named `hermes-agent`; the shebang fallback has no pip (pipx venvs ship without it). | **installer bug** (`install.sh`, the hermes block around `pipx inject hermes acp-hermes`) | None: the leg is right to be red until the installer injects into `hermes-agent`. |
 | `claude-code` | Anthropic answered `401 authentication_error: Invalid bearer token` through the BYO path. The proxy forwards `Authorization: Bearer` and `anthropic-beta` verbatim (`apps/tenant-gateway/src/proxy/anthropicNative.ts`), so this is the `CLAUDE_CODE_OAUTH_TOKEN` secret itself. | secret | None: re-mint with `claude setup-token` and update the secret. |
 | `qwen-code` | `qwen-acp -p` ran for the full 300 s (exit 124) printing `ACP write error: write EPIPE` from qwen-code's own `packages/cli/src/acp-integration` (Zed Agent Client Protocol transport); audit showed Read/Grep/agent/tool_search rows but never the `echo`. | upstream / product (reproduce in a sandbox) | None yet; gsc#1399 holds the log. |
-| `opencode` | "The user rejected permission to use this specific tool call" in headless `run`. | product bug gsc#1380 | None. |
+| `opencode` | "permission requested: bash (echo ...); auto-rejecting" / "The user rejected permission to use this specific tool call" in headless `run` (opencode 1.18.35). The installer writes `permission.bash = "ask"` for attended users; `run` has no one to answer it and auto-rejects, even though the gateway row for the call was `allow`. | canary env (gsc#1380) | The leg sets `OPENCODE_CONFIG_CONTENT='{"permission":{"bash":{"echo *":"allow"}}}'` for that one process only; the installer's `opencode.json` is untouched. |
 | `sdk-langchain` | `ACPMiddleware` imports `langchain.agents.middleware`; the leg installed only `acp-langchain`. | canary env | `pip install acp-langchain 'langchain>=1.3.3'`. |
 | `sdk-governance-anthropic` | `getConfig` is not exported by `@agenticcontrolplane/governance-anthropic@0.2.1` (it re-exports `governed`, `withContext`, `configure`, `getContext`). | canary script | Version from the package manifest, base URL from env. |
 | `sdk-proxy` | `@agenticcontrolplane/proxy` is 404 on npm and not in the SDK monorepo tree. | unpublished | Out of the scheduled set until it is published. |
