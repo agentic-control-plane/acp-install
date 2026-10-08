@@ -77,11 +77,13 @@ permissions:
   contents: read
 
 env:
-  # Scheduled set. prime-agent, grok and muse are dispatch-only until their
-  # harness install path is verifiable (run 37692378153: `prime-agent`,
-  # `@xai-org/grok-build` and `muse-code` are all 404 on npm; Prime Agent is
-  # now a Rust binary (gsc#1378), Muse Code ships as a binary, Grok Build's
-  # package is unnamed in the plugin repo). sdk-proxy is out until
+  # Scheduled set. prime-agent, grok and muse are dispatch-only. Prime Agent
+  # now installs from its GitHub release tarballs (npm `prime-agent` is 404),
+  # but the Rust beta has no extension loader, so the ACP extension cannot
+  # load and the leg stays red until the plugin is ported (gsc#1378, #1406);
+  # it joins the scheduled set only once it can go green. `@xai-org/grok-build`
+  # and `muse-code` are 404 on npm (run 37692378153); Muse Code ships as a
+  # binary, Grok Build's package is unnamed in the plugin repo. sdk-proxy is out until
   # @agenticcontrolplane/proxy is actually published (404 on npm; not in the
   # SDK monorepo tree either). Details: docs/harness-canary.md.
   ALL_HARNESSES: '["claude-code","codex","opencode","qwen-code","pi","dsh","hermes","openclaw"]'
@@ -144,9 +146,12 @@ jobs:
       # 2026-10-07). pi and prime-agent: the installer detects them by
       # ~/.pi/agent and ~/.prime/agent, which a fresh npm install does not
       # create, so the leg creates the dir (same as muse's ~/.config/muse).
-      # prime-agent, grok, muse names are still unverified (see env above).
+      # prime-agent installs from GitHub release tarballs (see its case arm);
+      # grok and muse names are still unverified (see env above).
       - name: Install current released harness
         id: harness
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eo pipefail
           case "$HARNESS" in
@@ -155,7 +160,24 @@ jobs:
             opencode)    npm i -g opencode-ai@latest;                         v="$(opencode --version | head -1)" ;;
             qwen-code)   npm i -g @qwen-code/qwen-code@latest;                v="$(qwen --version | head -1)" ;;
             pi)          npm i -g @earendil-works/pi-coding-agent@latest; mkdir -p "$HOME/.pi/agent"; v="$(pi --version | head -1)" ;;
-            prime-agent) npm i -g prime-agent@latest; mkdir -p "$HOME/.prime/agent"; v="$(prime-agent --version 2>/dev/null | head -1 || prime --version | head -1)" ;;
+            prime-agent)
+              # Not on npm (gsc#1390). Real install path: versioned GitHub
+              # release tarballs (PrimeIntellect-ai/prime-agent), verified
+              # against the release SHA256SUMS. "Latest" = newest non-draft
+              # release INCLUDING prereleases, because the Rust beta is what
+              # `prime-agent update` moves people onto; /releases/latest
+              # would pin the old TypeScript stable (v0.9.8).
+              tag="$(gh api repos/PrimeIntellect-ai/prime-agent/releases --jq '[.[] | select(.draft == false)][0].tag_name')"
+              test -n "$tag" || { echo "no prime-agent release resolved"; exit 1; }
+              ver="${tag#v}"; asset="prime-agent-${ver}-linux-x64.tar.gz"
+              pdir="$(mktemp -d)"
+              gh release download "$tag" -R PrimeIntellect-ai/prime-agent -p "$asset" -p SHA256SUMS -D "$pdir"
+              (cd "$pdir" && grep -F " $asset" SHA256SUMS | sha256sum -c -)
+              mkdir -p "$HOME/.local/share/prime-agent" "$HOME/.local/bin" "$HOME/.prime/agent"
+              tar -xzf "$pdir/$asset" -C "$HOME/.local/share/prime-agent"
+              ln -sf "$HOME/.local/share/prime-agent/prime-agent" "$HOME/.local/bin/prime-agent"
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.local/bin:$PATH"
+              v="$(prime-agent --version | head -1)" ;;
             grok)        npm i -g @xai-org/grok-build@latest;                 v="$(grok --version | head -1)" ;;
             dsh)         npm i -g @deepseek-ai/dsh@latest;                     v="$(dsh --version | head -1)" ;;
             hermes)      pipx install hermes-agent;                           v="$(hermes --version | head -1)" ;;
