@@ -73,7 +73,7 @@ Each matrix leg, on a fresh `ubuntu-latest` runner with Node 22 (and Python
    `acp-canary-<run id>-<harness>` through the launcher (commands in the
    table). The step **fails** if the transcript contains a rejection
    (`auto-rejecting`, `rejected permission`, `Denied at approval`,
-   `permission denied`, `requires approval`): that is gsc#1380 (a headless
+   `permission denied`, `requires approval`, `permission was declined`): that is gsc#1380 (a headless
    harness rejecting the governed call), and the leg goes red with the
    transcript attached rather than passing silently. On that failure the step
    prints every audit row in the window with its `decision`
@@ -218,6 +218,7 @@ tenant doc before the first scheduled run.
   the issue says so. The installer also sets `permission.bash = "ask"` in
   `opencode.json`; headless `opencode run` relies on the `acp-opencode`
   plugin to answer that ask.
+- qwen-code headless needs `--yolo` (shell calls are declined, not prompted, in `-p` mode); the leg passes it and closes stdin.
 - Headless `-p` on qwen-code, pi and prime-agent runs the shell call only if
   the hook's `allow` is honoured as the permission decision; if the harness
   still asks, the transcript shows the rejection and the leg goes red with
@@ -261,7 +262,7 @@ sdk-pydantic-ai) were green.
 | `openclaw` | `openclaw@2026.9.8` refuses Node 22 (engines `>=24.16.0 <25 \|\| >=26.1.0`). | canary env | Node 24 for this leg only. |
 | `hermes` | Installer exit 23. `install.sh` greps `pipx list` for `package hermes`, which matches `hermes-agent`, then runs `pipx inject hermes ...` against a venv that is named `hermes-agent`; the shebang fallback has no pip (pipx venvs ship without it). | **installer bug** (`install.sh`, the hermes block around `pipx inject hermes acp-hermes`) | None: the leg is right to be red until the installer injects into `hermes-agent`. |
 | `claude-code` | Anthropic answered `401 authentication_error: Invalid bearer token` through the BYO path. The proxy forwards `Authorization: Bearer` and `anthropic-beta` verbatim (`apps/tenant-gateway/src/proxy/anthropicNative.ts`), so this is the `CLAUDE_CODE_OAUTH_TOKEN` secret itself. | secret | None: re-mint with `claude setup-token` and update the secret. |
-| `qwen-code` | `qwen-acp -p` ran for the full 300 s (exit 124) printing `ACP write error: write EPIPE` from qwen-code's own `packages/cli/src/acp-integration` (Zed Agent Client Protocol transport); audit showed Read/Grep/agent/tool_search rows but never the `echo`. | upstream / product (reproduce in a sandbox) | None yet; gsc#1399 holds the log. |
+| `qwen-code` | `qwen-acp -p` ran for the full 300 s (exit 124) printing `ACP write error: write EPIPE` from qwen-code's own `packages/cli/src/acp-integration` (Zed Agent Client Protocol transport); audit showed Read/Grep/agent/tool_search rows but never the `echo`. | canary invocation (run 37784245015 later showed qwen finishing in ~60 s with 33 tool rows and no shell row: headless qwen declines `run_shell_command` without YOLO) | `qwen-acp --yolo -p ... </dev/null`; the ACP hook still gates the call. The EPIPE hang was not reproduced. |
 | `opencode` | "The user rejected permission to use this specific tool call" in headless `run`. | product bug gsc#1380 | None. |
 | `sdk-langchain` | `ACPMiddleware` imports `langchain.agents.middleware`; the leg installed only `acp-langchain`. | canary env | `pip install acp-langchain 'langchain>=1.3.3'`. |
 | `sdk-governance-anthropic` | `getConfig` is not exported by `@agenticcontrolplane/governance-anthropic@0.2.1` (it re-exports `governed`, `withContext`, `configure`, `getContext`). | canary script | Version from the package manifest, base URL from env. |

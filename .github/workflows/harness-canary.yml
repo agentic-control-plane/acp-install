@@ -217,7 +217,14 @@ jobs:
               test -n "$CLAUDE_CODE_OAUTH_TOKEN" || { echo "CLAUDE_CODE_OAUTH_TOKEN secret is not set"; exit 2; }
               timeout 300 "$HOME/.acp/bin/claude-acp" -p "$prompt" --allowedTools "Bash(echo:*)" 2>&1 | tee canary-run.log ;;
             opencode)    timeout 300 "$HOME/.acp/bin/opencode-acp" run "$prompt" 2>&1 | tee canary-run.log ;;
-            qwen-code)   timeout 300 "$HOME/.acp/bin/qwen-acp" -p "$prompt" 2>&1 | tee canary-run.log ;;
+            qwen-code)
+              # Headless qwen cannot prompt, so without --yolo it declines
+              # run_shell_command ("permission ... was declined (non-interactive
+              # mode cannot prompt)"), the model hunts with tool_search/Read/glob
+              # and never emits the echo. --yolo skips only qwen's own prompt;
+              # the ACP PreToolUse hook still gates every call. </dev/null so
+              # a stray stdin read cannot hang the leg.
+              QWEN_CODE_SUPPRESS_YOLO_WARNING=1 timeout 300 "$HOME/.acp/bin/qwen-acp" --yolo -p "$prompt" </dev/null 2>&1 | tee canary-run.log ;;
             pi)          timeout 300 "$HOME/.acp/bin/pi-acp" -p "$prompt" 2>&1 | tee canary-run.log ;;
             prime-agent) timeout 300 "$HOME/.acp/bin/prime-acp" -p "$prompt" 2>&1 | tee canary-run.log ;;
             *) echo "no live call defined for $HARNESS"; exit 2 ;;
@@ -228,9 +235,9 @@ jobs:
           # in the window with its decision so the failure can be classified
           # (decision=allow -> plugin/harness permission contract drift;
           # decision=ask -> the gateway is asking in audit mode).
-          if grep -Eiq 'auto-rejecting|rejected permission|Denied at approval|permission denied|requires approval' canary-run.log; then
+          if grep -Eiq 'auto-rejecting|rejected permission|Denied at approval|permission denied|requires approval|permission was declined' canary-run.log; then
             echo "FAIL $HARNESS rejected the governed call (gsc#1380):"
-            grep -Ei 'auto-rejecting|rejected permission|Denied at approval|permission denied|requires approval' canary-run.log
+            grep -Ei 'auto-rejecting|rejected permission|Denied at approval|permission denied|requires approval|permission was declined' canary-run.log
             echo "audit rows seen since $CANARY_SINCE (decision per row):"
             node scripts/canary-assert.mjs rows --harness "$HARNESS" --since "$CANARY_SINCE" || true
             exit 1
