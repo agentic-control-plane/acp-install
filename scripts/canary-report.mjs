@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Harness canary reporter: one deduped GitHub issue per harness in
-// davidcrowe/gatewaystack-connect.
+// davidcrowe/gatewaystack-connect, plus the sweep that resolves the drift
+// scout's release issues for the version this run tested.
 //
 //   canary-report.mjs --harness <id> --status <success|failure> --version <v>
 //                     --run-url <url> [--failed-step <name>] [--log <file>]
+//                     [--tested <entryId=version,...>]
 //                     [--drift-issue <n> [--drift-version <v>] [--drift-kind release|docs] [--drift-close on|off]]
-//                     [--dry-run]
+//                     [--dry-run [--fixture <json>]]
 //
 // Dedup: the open issue labelled `canary` + `harness:<id>` (and, as a
 // belt-and-braces check, carrying the `<!-- harness-canary:<id> -->`
@@ -13,18 +15,36 @@
 // with an open issue -> comment the run URL and version. Success with an
 // open issue -> comment and close. Success with none -> nothing to do.
 //
-// Drift pairing: when the run was dispatched by the drift scout
-// (repository_dispatch harness-release with client_payload.drift_issue),
-// the verdict is also posted as a comment on that drift issue:
-//   "Canary <leg> on <version>: ✅ passed: safe to close", or
-//   "Canary <leg> on <version>: ❌ failed at <step>: see <canary issue / run>".
-// On a pass the drift issue is closed too when --drift-close is on. Default:
-// on for release-type drift (`--drift-kind release`, the only kind the scout
-// dispatches today), off for docs-page drift (`--drift-kind docs`), since a
-// green canary says nothing about a changed docs page.
+// Drift sweep (no dispatch token needed): the drift scout (gatewaystack-
+// connect, apps/tenant-gateway/src/drift) files ONE issue per upstream
+// release, label `drift`, body marker
+// `<!-- drift-scout:key=release:<entryId>@<version> -->`. After reporting
+// the leg, this script lists the open `drift` issues, keeps those whose
+// marker names a registry entry mapped to this leg (LEG_ENTRIES below
+// mirrors `canaryLeg` in the scout's registry.ts) and whose normalised
+// version equals the version this run tested, and posts the verdict:
+//   pass: "Canary <leg> on <version>: ✅ passed — closing." + close (completed)
+//   fail: "Canary <leg> on <version>: ❌ failed at <step>: <link>" once per
+//         failure (not repeated when the reporter's last comment on that
+//         issue already says failed for the same version).
+// Docs-type drift issues (non-release markers) are never touched. The
+// scheduled run (every 6 h, latest versions) is what resolves a release
+// issue, within ~6 h of the scout filing it.
+//
+// Drift pairing (kept): when the run was dispatched by the scout with
+// client_payload.drift_issue, the verdict is posted on that issue too, and
+// the sweep skips it so it is not commented twice.
+//
+// --tested: for SDK legs `--version` is the ACP package's version, not the
+// upstream's; the workflow passes the upstream versions it actually
+// installed as `entryId=version` pairs (e.g. `langchain-core=1.6.4`). An
+// SDK entry without a pair is skipped by the sweep. Harness legs use
+// --version (the harness's own `--version` output, normalised).
 //
 // Auth: CANARY_ISSUES_TOKEN (a fine-grained PAT with Issues: read/write on
-// the target repo). --dry-run prints the requests instead of sending them.
+// the target repo). --dry-run prints the requests instead of sending them;
+// --fixture <json> ({drift: [...issues], canary: [...issues], comments:
+// [...]}) is what dry-run GETs return, so the sweep can be previewed.
 
 import fs from "node:fs";
 
@@ -38,12 +58,14 @@ const opt = (name, dflt) => {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : dflt;
 };
 const dryRun = args.includes("--dry-run");
+const fixtureFile = opt("fixture", "");
 const harness = opt("harness");
 const status = opt("status");
 const version = opt("version", "unknown");
 const runUrl = opt("run-url", "");
 const failedStep = opt("failed-step", "none");
 const logFile = opt("log", "");
+const tested = opt("tested", "");
 const driftIssue = Number(opt("drift-issue", "")) || 0;
 const driftVersion = opt("drift-version", "") || version;
 const driftKind = opt("drift-kind", "release") === "docs" ? "docs" : "release";
@@ -65,14 +87,66 @@ if (!token && !dryRun) {
   process.exit(2);
 }
 
+// Canary leg -> drift-registry entry ids. Mirror of `canaryLeg` in
+// gatewaystack-connect apps/tenant-gateway/src/drift/registry.ts; keep in
+// step when an entry gains or changes its leg.
+const LEG_ENTRIES = {
+  "claude-code": ["claude-code"],
+  codex: ["codex"],
+  opencode: ["opencode"],
+  "qwen-code": ["qwen-code"],
+  pi: ["pi"],
+  "prime-agent": ["prime-agent"],
+  grok: ["grok"],
+  dsh: ["dsh"],
+  hermes: ["hermes"],
+  openclaw: ["openclaw"],
+  muse: ["muse"],
+  "sdk-crewai": ["crewai"],
+  "sdk-langchain": ["langchain-core", "langgraph"],
+  "sdk-governance-anthropic": ["anthropic-sdk-typescript"],
+};
+const DRIFT_LABEL = "drift";
+const RELEASE_MARKER = /drift-scout:key=release:([^@\s]+)@([^\s<]*)/;
+const VERDICT_MARKER = (v, result) => `<!-- harness-canary:verdict leg=${harness} version=${v} result=${result} -->`;
+
+// Same rule as normalizeVersion in the scout's issue.ts: "v1.1.0",
+// "rust-v0.150.0", "langchain-core==1.6.4", "2.0.14 (Claude Code)" ->
+// "1.1.0", "0.150.0", "1.6.4", "2.0.14". Pre-release suffixes survive.
+function normalizeVersion(s) {
+  const t = (s ?? "").trim();
+  const m = t.match(/\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.+-]*)?/);
+  return m ? m[0] : t.replace(/^v(?=\d)/i, "");
+}
+
+const testedPairs = Object.fromEntries(
+  tested.split(",").map((s) => s.trim()).filter((s) => s.includes("="))
+    .map((s) => [s.slice(0, s.indexOf("=")).trim(), s.slice(s.indexOf("=") + 1).trim()])
+    .filter(([, v]) => v),
+);
+// The normalised version this run tested for one registry entry, or null
+// when it cannot be known (an SDK entry the workflow passed no pair for).
+function testedVersionFor(entryId) {
+  if (testedPairs[entryId]) return normalizeVersion(testedPairs[entryId]);
+  if (isSdk) return null;
+  return normalizeVersion(version);
+}
+
 const marker = `<!-- harness-canary:${harness} -->`;
 const labels = ["canary", `harness:${harness}`];
 const stamp = new Date().toISOString();
 
+let fixture = null;
+if (dryRun && fixtureFile) fixture = JSON.parse(fs.readFileSync(fixtureFile, "utf8"));
+
 async function gh(method, path, body) {
   if (dryRun) {
     console.log(`[dry-run] ${method} ${path}${body ? "\n" + JSON.stringify(body, null, 2) : ""}`);
-    return method === "GET" ? [] : { html_url: "(dry-run)" };
+    if (method !== "GET") return { html_url: "(dry-run)" };
+    if (!fixture) return [];
+    if (path.includes("/comments")) return fixture.comments ?? [];
+    if (path.includes(`labels=${DRIFT_LABEL}&`) || path.endsWith(`labels=${DRIFT_LABEL}`)) return fixture.drift ?? [];
+    return fixture.canary ?? [];
   }
   const res = await fetch(`${API}${path}`, {
     method,
@@ -156,6 +230,19 @@ async function reportCanaryIssue() {
   return null;
 }
 
+// The verdict comment for one drift issue. `v` is the version as the drift
+// issue states it (normalised); the hidden marker is what the sweep's
+// dedupe reads back.
+function verdictComment(v, canaryIssueUrl) {
+  const head = `Canary \`${harness}\` on \`${v}\``;
+  const tail = `\n\n${runLine}`;
+  if (status === "success") {
+    return { pass: true, body: `${VERDICT_MARKER(v, "passed")}\n${head}: ✅ passed — closing.${tail}` };
+  }
+  const see = canaryIssueUrl || runUrl || "(no link)";
+  return { pass: false, body: `${VERDICT_MARKER(v, "failed")}\n${head}: ❌ failed at \`${failedStep}\`: ${see}${tail}` };
+}
+
 // Posts the verdict on the drift issue that dispatched this run. Best
 // effort: a failure here is logged and does not fail the reporter, so the
 // canary issue (the primary record) is never lost to a drift-side hiccup.
@@ -166,7 +253,7 @@ async function reportToDriftIssue(canaryIssueUrl) {
   try {
     if (status === "success") {
       await gh("POST", `/repos/${REPO}/issues/${driftIssue}/comments`, {
-        body: `${head}: ✅ passed: safe to close${driftClose ? " — closing." : "."}${tail}`,
+        body: `${VERDICT_MARKER(normalizeVersion(driftVersion), "passed")}\n${head}: ✅ passed: safe to close${driftClose ? " — closing." : "."}${tail}`,
       });
       if (driftClose) {
         await gh("PATCH", `/repos/${REPO}/issues/${driftIssue}`, { state: "closed", state_reason: "completed" });
@@ -178,7 +265,7 @@ async function reportToDriftIssue(canaryIssueUrl) {
     }
     const see = canaryIssueUrl ?? runUrl ?? "(no link)";
     await gh("POST", `/repos/${REPO}/issues/${driftIssue}/comments`, {
-      body: `${head}: ❌ failed at \`${failedStep}\`: see ${see}${tail}`,
+      body: `${VERDICT_MARKER(normalizeVersion(driftVersion), "failed")}\n${head}: ❌ failed at \`${failedStep}\`: see ${see}${tail}`,
     });
     console.log(`drift #${driftIssue}: failed at ${failedStep}, commented`);
   } catch (e) {
@@ -186,9 +273,67 @@ async function reportToDriftIssue(canaryIssueUrl) {
   }
 }
 
+// True when the reporter's most recent verdict on this issue already says
+// "failed" for the same version: a later red run on the same version adds
+// nothing, so it is not repeated. A pass, or a verdict for another version,
+// does not suppress.
+async function alreadyFailedHere(issueNumber, v) {
+  const q = new URLSearchParams({ per_page: "100" });
+  const list = await gh("GET", `/repos/${REPO}/issues/${issueNumber}/comments?${q}`);
+  const mine = (Array.isArray(list) ? list : []).filter((c) => String(c.body ?? "").includes(`harness-canary:verdict leg=${harness} `));
+  const last = mine[mine.length - 1];
+  return !!last && String(last.body).includes(VERDICT_MARKER(v, "failed"));
+}
+
+// Finds every open release-type drift issue for an entry mapped to this leg
+// at the version this run tested and posts the verdict (close on pass).
+// Best effort, same as reportToDriftIssue.
+async function sweepDriftIssues(canaryIssueUrl) {
+  const entries = LEG_ENTRIES[harness];
+  if (!entries) { console.log(`drift sweep: no registry entry maps to leg ${harness}`); return; }
+  const want = new Map();
+  for (const id of entries) {
+    const v = testedVersionFor(id);
+    if (v) want.set(id, v);
+  }
+  if (want.size === 0) { console.log(`drift sweep: no tested upstream version known for ${entries.join(", ")} (pass --tested)`); return; }
+  console.log(`drift sweep: ${[...want].map(([id, v]) => `${id}@${v}`).join(", ")}`);
+  try {
+    const q = new URLSearchParams({ state: "open", labels: DRIFT_LABEL, per_page: "100" });
+    const list = await gh("GET", `/repos/${REPO}/issues?${q}`);
+    const issues = (Array.isArray(list) ? list : []).filter((i) => !i.pull_request);
+    let touched = 0;
+    for (const issue of issues) {
+      if (issue.number === driftIssue) continue; // already handled by the pairing path
+      const m = String(issue.body ?? "").match(RELEASE_MARKER);
+      if (!m) continue; // docs-type drift: a green canary says nothing about it
+      const [, entryId, markerVersion] = m;
+      const v = want.get(entryId);
+      if (!v || normalizeVersion(markerVersion) !== v) continue;
+      touched++;
+      const { pass, body } = verdictComment(v, canaryIssueUrl);
+      if (!pass && await alreadyFailedHere(issue.number, v)) {
+        console.log(`drift #${issue.number} (${entryId}@${v}): already marked failed on ${v}, not repeating`);
+        continue;
+      }
+      await gh("POST", `/repos/${REPO}/issues/${issue.number}/comments`, { body });
+      if (pass) {
+        await gh("PATCH", `/repos/${REPO}/issues/${issue.number}`, { state: "closed", state_reason: "completed" });
+        console.log(`drift #${issue.number} (${entryId}@${v}): passed, closed`);
+      } else {
+        console.log(`drift #${issue.number} (${entryId}@${v}): failed at ${failedStep}, commented`);
+      }
+    }
+    if (touched === 0) console.log(`drift sweep: no open release drift issue matches (${issues.length} open drift issues scanned)`);
+  } catch (e) {
+    console.error(`drift sweep: ${e.message ?? e}`);
+  }
+}
+
 async function main() {
   const canaryIssueUrl = await reportCanaryIssue();
   await reportToDriftIssue(canaryIssueUrl);
+  await sweepDriftIssues(canaryIssueUrl);
 }
 
 main().catch((e) => { console.error(e.message ?? e); process.exit(1); });
