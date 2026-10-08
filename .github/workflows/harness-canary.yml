@@ -216,7 +216,16 @@ jobs:
             claude-code)
               test -n "$CLAUDE_CODE_OAUTH_TOKEN" || { echo "CLAUDE_CODE_OAUTH_TOKEN secret is not set"; exit 2; }
               timeout 300 "$HOME/.acp/bin/claude-acp" -p "$prompt" --allowedTools "Bash(echo:*)" 2>&1 | tee canary-run.log ;;
-            opencode)    timeout 300 "$HOME/.acp/bin/opencode-acp" run "$prompt" 2>&1 | tee canary-run.log ;;
+            # Headless `opencode run` has no one to answer a permission "ask"
+            # and auto-rejects it (opencode 1.18.35: "permission requested:
+            # bash (...); auto-rejecting"), because the installer writes
+            # permission.bash = "ask" for real, attended users. Pre-approve
+            # ONLY `echo *` for this one process via OPENCODE_CONFIG_CONTENT
+            # (highest-precedence config layer); ~/.config/opencode/opencode.json
+            # stays exactly as the installer wrote it, and the acp-opencode
+            # plugin's tool.execute.before still governs + audits the call.
+            opencode)    OPENCODE_CONFIG_CONTENT='{"permission":{"bash":{"echo *":"allow"}}}' \
+                         timeout 300 "$HOME/.acp/bin/opencode-acp" run "$prompt" 2>&1 | tee canary-run.log ;;
             qwen-code)
               # Headless qwen cannot prompt, so without --yolo it declines
               # run_shell_command ("permission ... was declined (non-interactive
