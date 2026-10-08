@@ -13,6 +13,12 @@
 # issue for that leg. Coverage table, secrets and the workspace flag:
 # docs/harness-canary.md.
 #
+# Drift pairing: the drift scout (gatewaystack-connect, apps/tenant-gateway/
+# src/drift) dispatches `harness-release` with client_payload
+# {harness, drift_issue, version, drift_kind, close_on_pass} when an upstream
+# release signal moves; the reporter then comments the verdict on that drift
+# issue and, for release-type drift, closes it on a pass.
+#
 # Live legs (one governed `echo <marker>`, then the audit-row assert):
 #   claude-code  claude-acp -p, BYO subscription OAuth (CLAUDE_CODE_OAUTH_TOKEN)
 #                forwarded by the proxy; no ANTHROPIC_API_KEY anywhere.
@@ -246,6 +252,13 @@ jobs:
           CANARY_ISSUES_TOKEN: ${{ secrets.CANARY_ISSUES_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HARNESS_VERSION: ${{ steps.harness.outputs.version }}
+          # Drift-scout pairing (repository_dispatch harness-release): the
+          # verdict is also commented on the drift issue, which is closed on
+          # a pass for release-type drift (docs/harness-canary.md).
+          DRIFT_ISSUE: ${{ github.event.client_payload.drift_issue || '' }}
+          DRIFT_VERSION: ${{ github.event.client_payload.version || '' }}
+          DRIFT_KIND: ${{ github.event.client_payload.drift_kind || '' }}
+          DRIFT_CLOSE: ${{ github.event.client_payload.drift_issue && github.event.client_payload.close_on_pass == false && 'off' || '' }}
           O_HARNESS: ${{ steps.harness.outcome }}
           O_SEED: ${{ steps.seed.outcome }}
           O_INSTALL: ${{ steps.acp_install.outcome }}
@@ -268,7 +281,9 @@ jobs:
             fi
           done
           node scripts/canary-report.mjs --harness "$HARNESS" --status "$status" --version "$HARNESS_VERSION" \
-            --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"}
+            --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"} \
+            ${DRIFT_ISSUE:+--drift-issue "$DRIFT_ISSUE"} ${DRIFT_VERSION:+--drift-version "$DRIFT_VERSION"} \
+            ${DRIFT_KIND:+--drift-kind "$DRIFT_KIND"} ${DRIFT_CLOSE:+--drift-close "$DRIFT_CLOSE"}
 
   # SDK legs: install the PUBLISHED package (npm / PyPI, latest), make one
   # governed tool-call check (POST /govern/tool-use with tool `shell`,
@@ -357,6 +372,10 @@ jobs:
           CANARY_ISSUES_TOKEN: ${{ secrets.CANARY_ISSUES_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PKG_VERSION: ${{ steps.pkg.outputs.version }}
+          DRIFT_ISSUE: ${{ github.event.client_payload.drift_issue || '' }}
+          DRIFT_VERSION: ${{ github.event.client_payload.version || '' }}
+          DRIFT_KIND: ${{ github.event.client_payload.drift_kind || '' }}
+          DRIFT_CLOSE: ${{ github.event.client_payload.drift_issue && github.event.client_payload.close_on_pass == false && 'off' || '' }}
           O_PKG: ${{ steps.pkg.outcome }}
           O_CALL: ${{ steps.call.outcome }}
           O_AUDIT: ${{ steps.audit.outcome }}
@@ -374,4 +393,6 @@ jobs:
             fi
           done
           node scripts/canary-report.mjs --harness "$LEG" --status "$status" --version "$PKG_VERSION" \
-            --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"}
+            --run-url "$RUN_URL" --failed-step "${failed:-none}" ${log:+--log "$log"} \
+            ${DRIFT_ISSUE:+--drift-issue "$DRIFT_ISSUE"} ${DRIFT_VERSION:+--drift-version "$DRIFT_VERSION"} \
+            ${DRIFT_KIND:+--drift-kind "$DRIFT_KIND"} ${DRIFT_CLOSE:+--drift-close "$DRIFT_CLOSE"}
