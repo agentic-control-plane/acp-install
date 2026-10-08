@@ -530,9 +530,16 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo "  Detected Hermes Agent — installing the ACP plugin…"
   HERMES_PLUGIN_OK=false
   # If hermes lives in a pipx venv, the plugin must be injected there —
-  # a bare pip install lands in the wrong environment.
-  if command -v pipx > /dev/null 2>&1 && pipx list 2>/dev/null | grep -qi "package hermes"; then
-    pipx inject hermes acp-hermes --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+  # a bare pip install lands in the wrong environment, and pipx venvs ship
+  # without pip, so the shebang fallback below can't reach them either.
+  # The venv is named after the PyPI package (`hermes-agent`, not `hermes`):
+  # read the real name off `pipx list` ("package hermes-agent 0.19.0, ...")
+  # instead of guessing it from the command name.
+  if command -v pipx > /dev/null 2>&1; then
+    HERMES_PIPX_VENV="$(pipx list 2>/dev/null | sed -n 's/^[[:space:]]*package[[:space:]]\{1,\}\(hermes[^[:space:],]*\).*/\1/p' | head -1)"
+    if [ -n "$HERMES_PIPX_VENV" ]; then
+      pipx inject "$HERMES_PIPX_VENV" acp-hermes --force >/dev/null 2>&1 && HERMES_PLUGIN_OK=true
+    fi
   fi
   # Otherwise install with the same interpreter that runs hermes (shebang),
   # falling back to plain pip. PEP 668 boxes will refuse — that's the
@@ -549,6 +556,7 @@ if [ "$HAS_HERMES" = true ] && [ "$LOCAL_MODE" = false ]; then
   fi
   if [ "$HERMES_PLUGIN_OK" = true ] && hermes plugins enable acp >/dev/null 2>&1; then
     echo "  ${C_GREEN}✓ Hermes governed${C_RESET} — next: acp-hermes login   (headless box: set ACP_BEARER_TOKEN instead)"
+    INSTALLED="${INSTALLED:+$INSTALLED, }Hermes"
   else
     echo "  Couldn't install automatically (often a PEP 668 managed environment)."
     echo "  Run it in your Python env of choice:"
@@ -588,6 +596,7 @@ if [ "$HAS_DSH" = true ] && [ "$LOCAL_MODE" = false ]; then
   fi
   if [ "$DSH_PROFILES_INSTALLED" -gt 0 ] && [ "$DSH_PROFILES_FAILED" -eq 0 ]; then
     echo "  ${C_GREEN}✓ DeepSeek Harness governed${C_RESET} — plugin added to $DSH_PROFILES_INSTALLED profile(s); active from the next dsh boot."
+    INSTALLED="${INSTALLED:+$INSTALLED, }DeepSeek Harness"
   else
     # No profiles yet, dsh not on PATH, or an add refused (dsh needs Node 22 —
     # a Node 20 default breaks it). Print the manual path instead of guessing.
@@ -622,6 +631,7 @@ if [ "$HAS_PI" = true ] && [ "$LOCAL_MODE" = false ]; then
   fi
   if [ "$PI_EXT_OK" = true ]; then
     echo "  ${C_GREEN}✓ pi governed${C_RESET} — extension written to ~/.pi/agent/extensions/acp.ts; active from the next pi session (needs Node 22)."
+    INSTALLED="${INSTALLED:+$INSTALLED, }pi"
   else
     # Network refused or the extensions dir isn't writable — print the manual
     # path rather than guessing.
@@ -775,23 +785,17 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
   echo ""
 fi
 
-if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ] && [ "$HAS_QWEN" = false ] && [ "$HAS_COPILOT" = false ]; then
-  # Hermes-only / dsh-only / pi-only box: the plugin paths above already
-  # handled them — success, not "nothing detected".
-  if [ "$HAS_HERMES" = true ] || [ "$HAS_DSH" = true ] || [ "$HAS_PI" = true ] || [ "$HAS_MUSE" = true ] || [ "$HAS_GROK" = true ]; then
-    _found=""
-    [ "$HAS_HERMES" = true ] && _found="Hermes"
-    [ "$HAS_DSH" = true ] && _found="${_found:+$_found + }DeepSeek Harness"
-    [ "$HAS_PI" = true ] && _found="${_found:+$_found + }pi"
-    [ "$HAS_MUSE" = true ] && _found="${_found:+$_found + }Muse Code"
-    [ "$HAS_GROK" = true ] && _found="${_found:+$_found + }Grok Build"
-    if [ "$LOCAL_MODE" = true ]; then
-      echo "  $_found was all we found — local mode doesn't govern these yet; re-run without --local."
-    else
-      echo "  $_found was all we found — you're done here."
-    fi
-    exit 0
-  fi
+# Plugin-governed harnesses (Hermes, dsh, pi, Prime, Muse, Grok, Antigravity)
+# are wired above, but they still need what comes AFTER this point: Step 1f
+# writes their priced launcher, provider block and agent directive, and
+# Step 2 puts the key on this machine (their plugins read ~/.acp/credentials).
+# An earlier version exited 0 here on a "hermes-only / pi-only box" — that
+# skipped all of it, and because bash was still streaming the script from
+# curl, the early exit broke the pipe and `curl | bash` reported 23 even
+# though the plugin had installed (harness canary, 2026-10-07). So: only the
+# truly-nothing-found case stops here; everything else falls through.
+if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = false ] && [ "$HAS_OPENCLAW" = false ] && [ "$HAS_OPENCODE" = false ] && [ "$HAS_QWEN" = false ] && [ "$HAS_COPILOT" = false ] \
+  && [ "$HAS_HERMES" = false ] && [ "$HAS_DSH" = false ] && [ "$HAS_PI" = false ] && [ "$HAS_PRIME" = false ] && [ "$HAS_MUSE" = false ] && [ "$HAS_GROK" = false ] && [ "$HAS_AGY" = false ]; then
   echo "  ${C_RED}No supported AI clients detected.${C_RESET}"
   echo "  Supported: Claude Code, Cursor, OpenAI Codex CLI, GitHub Copilot, OpenClaw, opencode, Qwen Code, pi, Prime Agent, Muse Code, Grok Build, Antigravity, Hermes Agent, DeepSeek Harness"
   echo "  Hermes Agent? It has a native pip plugin instead:"
@@ -831,6 +835,13 @@ fi
 if [ "$HAS_COPILOT" = true ]; then
   if [ -n "$TARGETS" ]; then TARGETS="$TARGETS + GitHub Copilot"; else TARGETS="GitHub Copilot"; fi
 fi
+[ "$HAS_HERMES" = true ] && TARGETS="${TARGETS:+$TARGETS + }Hermes"
+[ "$HAS_DSH" = true ] && TARGETS="${TARGETS:+$TARGETS + }DeepSeek Harness"
+[ "$HAS_PI" = true ] && TARGETS="${TARGETS:+$TARGETS + }pi"
+[ "$HAS_PRIME" = true ] && TARGETS="${TARGETS:+$TARGETS + }Prime Agent"
+[ "$HAS_MUSE" = true ] && TARGETS="${TARGETS:+$TARGETS + }Muse Code"
+[ "$HAS_GROK" = true ] && TARGETS="${TARGETS:+$TARGETS + }Grok Build"
+[ "$HAS_AGY" = true ] && TARGETS="${TARGETS:+$TARGETS + }Antigravity"
 
 # Machine-readable form of the same detection, sent with the device-code
 # request so the minted key records WHICH harness it was wired for. The
@@ -847,6 +858,13 @@ _add_slug() { if [ -n "$CLIENT_SLUG" ]; then CLIENT_SLUG="$CLIENT_SLUG+$1"; else
 [ "$HAS_OPENCODE" = true ] && _add_slug "opencode"
 [ "$HAS_QWEN" = true ] && _add_slug "qwen-code"
 [ "$HAS_COPILOT" = true ] && _add_slug "copilot"
+[ "$HAS_HERMES" = true ] && _add_slug "hermes"
+[ "$HAS_DSH" = true ] && _add_slug "dsh"
+[ "$HAS_PI" = true ] && _add_slug "pi"
+[ "$HAS_PRIME" = true ] && _add_slug "prime-agent"
+[ "$HAS_MUSE" = true ] && _add_slug "muse"
+[ "$HAS_GROK" = true ] && _add_slug "grok"
+[ "$HAS_AGY" = true ] && _add_slug "antigravity"
 [ -n "$CLIENT_SLUG" ] || CLIENT_SLUG="cli"
 
 echo ""
