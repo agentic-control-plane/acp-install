@@ -157,7 +157,7 @@ jobs:
           case "$HARNESS" in
             claude-code) npm i -g @anthropic-ai/claude-code@latest;          v="$(claude --version | head -1)" ;;
             codex)       npm i -g @openai/codex@latest;                       v="$(codex --version | head -1)" ;;
-            opencode)    npm i -g opencode-ai@latest;                         v="$(opencode --version | head -1)" ;;
+            opencode)    npm i -g @opencode/cli@latest;                       v="$(opencode --version | head -1)" ;;
             qwen-code)   npm i -g @qwen-code/qwen-code@latest;                v="$(qwen --version | head -1)" ;;
             pi)          npm i -g @earendil-works/pi-coding-agent@latest; mkdir -p "$HOME/.pi/agent"; v="$(pi --version | head -1)" ;;
             prime-agent)
