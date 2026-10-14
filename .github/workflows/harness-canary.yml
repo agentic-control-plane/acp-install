@@ -43,6 +43,16 @@ on:
     - cron: '13 */6 * * *'
   workflow_dispatch:
     inputs:
+      install_ref:
+        description: Install from this branch of davidcrowe/agenticcontrolplane.com instead of the live site (drift-agent draft PRs). Needs INSTALLER_READ_TOKEN.
+        required: false
+        default: ''
+        type: string
+      drift_issue:
+        description: Drift issue (gatewaystack-connect) to comment the verdict on. Never closed by an install_ref run.
+        required: false
+        default: ''
+        type: string
       harness:
         description: Which leg to run (all, harnesses, sdks, or one leg id)
         required: false
@@ -206,13 +216,24 @@ jobs:
             [ -f "$HOME/.qwen/settings.json" ] || printf '{ "security": { "auth": { "selectedType": "openai" } } }\n' > "$HOME/.qwen/settings.json"
           fi
 
-      - name: Install ACP via the live installer
+      - name: Install ACP via the live installer (or a draft branch)
         id: acp_install
+        env:
+          INSTALL_REF: ${{ inputs.install_ref || '' }}
+          INSTALLER_READ_TOKEN: ${{ secrets.INSTALLER_READ_TOKEN }}
         run: |
           set -eo pipefail
           # No TTY here: --only picks the harness, and the seeded key makes
           # Step 2 (Authenticate) keep the existing key and exit 0.
-          curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- "--only=$HARNESS" 2>&1 | tee acp-install.log
+          if [ -n "$INSTALL_REF" ]; then
+            # A drift-agent draft PR: the installer from that branch (private repo, read token).
+            [ -n "$INSTALLER_READ_TOKEN" ] || { echo "::error::install_ref set but INSTALLER_READ_TOKEN is missing"; exit 1; }
+            curl -sfL -H "Authorization: Bearer $INSTALLER_READ_TOKEN" -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/davidcrowe/agenticcontrolplane.com/contents/install.sh?ref=$INSTALL_REF" -o "$RUNNER_TEMP/install.sh"
+            bash "$RUNNER_TEMP/install.sh" "--only=$HARNESS" 2>&1 | tee acp-install.log
+          else
+            curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- "--only=$HARNESS" 2>&1 | tee acp-install.log
+          fi
           echo "CANARY_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
 
       - name: Assert install invariants
@@ -299,10 +320,10 @@ jobs:
           # Drift-scout pairing (repository_dispatch harness-release): the
           # verdict is also commented on the drift issue, which is closed on
           # a pass for release-type drift (docs/harness-canary.md).
-          DRIFT_ISSUE: ${{ github.event.client_payload.drift_issue || '' }}
+          DRIFT_ISSUE: ${{ inputs.drift_issue || github.event.client_payload.drift_issue || '' }}
           DRIFT_VERSION: ${{ github.event.client_payload.version || '' }}
           DRIFT_KIND: ${{ github.event.client_payload.drift_kind || '' }}
-          DRIFT_CLOSE: ${{ github.event.client_payload.drift_issue && github.event.client_payload.close_on_pass == false && 'off' || '' }}
+          DRIFT_CLOSE: ${{ (inputs.drift_issue || inputs.install_ref || (github.event.client_payload.drift_issue && github.event.client_payload.close_on_pass == false)) && 'off' || '' }}
           O_HARNESS: ${{ steps.harness.outcome }}
           O_SEED: ${{ steps.seed.outcome }}
           O_INSTALL: ${{ steps.acp_install.outcome }}
@@ -430,10 +451,10 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PKG_VERSION: ${{ steps.pkg.outputs.version }}
           UPSTREAM_VERSIONS: ${{ steps.pkg.outputs.upstream }}
-          DRIFT_ISSUE: ${{ github.event.client_payload.drift_issue || '' }}
+          DRIFT_ISSUE: ${{ inputs.drift_issue || github.event.client_payload.drift_issue || '' }}
           DRIFT_VERSION: ${{ github.event.client_payload.version || '' }}
           DRIFT_KIND: ${{ github.event.client_payload.drift_kind || '' }}
-          DRIFT_CLOSE: ${{ github.event.client_payload.drift_issue && github.event.client_payload.close_on_pass == false && 'off' || '' }}
+          DRIFT_CLOSE: ${{ (inputs.drift_issue || inputs.install_ref || (github.event.client_payload.drift_issue && github.event.client_payload.close_on_pass == false)) && 'off' || '' }}
           O_PKG: ${{ steps.pkg.outcome }}
           O_CALL: ${{ steps.call.outcome }}
           O_AUDIT: ${{ steps.audit.outcome }}

@@ -275,3 +275,25 @@ Issue volume: this one run filed 12 issues in davidcrowe/gatewaystack-connect
 #1380. One issue per leg is the dedupe unit, so a first run of a new matrix
 is always the loudest; the dispatch-only set above is what keeps the
 scheduled run from re-filing on names it cannot resolve.
+
+## Testing a draft fix (drift agent)
+
+`workflow_dispatch` takes two optional inputs for the drift agent
+(`gatewaystack-connect/scripts/drift-agent`), which dispatches them after it
+opens a draft PR against `davidcrowe/agenticcontrolplane.com`:
+
+- `install_ref` — run the leg with `install.sh` from that branch instead of
+  the live site. The repo is private, so this reads it through the GitHub
+  contents API with the `INSTALLER_READ_TOKEN` secret (fine-grained PAT,
+  Contents: read on `davidcrowe/agenticcontrolplane.com` only). Without the
+  secret an `install_ref` run fails at the install step rather than silently
+  testing the live installer. Only `install.sh` comes from the branch;
+  anything it downloads still comes from where it always does.
+- `drift_issue` — comment the verdict on that drift issue. A dispatch with
+  either input never closes the issue (`--drift-close off`); closing stays
+  with the release pairing and with a human merging the PR.
+
+```bash
+gh workflow run harness-canary.yml -R agentic-control-plane/acp-install \
+  -f harness=codex -f install_ref=drift/gsc-1437 -f drift_issue=1437
+```
