@@ -69,8 +69,12 @@ const tested = opt("tested", "");
 const driftIssue = Number(opt("drift-issue", "")) || 0;
 const driftVersion = opt("drift-version", "") || version;
 const driftKind = opt("drift-kind", "release") === "docs" ? "docs" : "release";
+// A drift-agent draft-branch run (install_ref): report on that drift issue only,
+// never close it, never touch the leg's canary issue or sweep other drift issues
+// — those describe the LIVE installer, which this run did not test.
+const testedRef = opt("tested-ref", "");
 const driftCloseOpt = opt("drift-close", "");
-const driftClose = driftCloseOpt ? /^(on|true|1|yes)$/i.test(driftCloseOpt) : driftKind === "release";
+const driftClose = !testedRef && (driftCloseOpt ? /^(on|true|1|yes)$/i.test(driftCloseOpt) : driftKind === "release");
 
 // Leg ids: every harness leg and every sdk-* leg the workflow defines (the
 // list lives in canary-assert.mjs; here any well-formed id is accepted so a
@@ -248,12 +252,14 @@ function verdictComment(v, canaryIssueUrl) {
 // canary issue (the primary record) is never lost to a drift-side hiccup.
 async function reportToDriftIssue(canaryIssueUrl) {
   if (!driftIssue) return;
-  const head = `Canary \`${harness}\` on \`${driftVersion}\``;
+  const head = `Canary \`${harness}\` on \`${driftVersion}\`${testedRef ? ` with installer branch \`${testedRef}\`` : ""}`;
   const tail = `\n\n${runLine}`;
   try {
     if (status === "success") {
       await gh("POST", `/repos/${REPO}/issues/${driftIssue}/comments`, {
-        body: `${VERDICT_MARKER(normalizeVersion(driftVersion), "passed")}\n${head}: ✅ passed: safe to close${driftClose ? " — closing." : "."}${tail}`,
+        body: testedRef
+          ? `${head}: ✅ passed. Only \`install.sh\` came from the branch; files it downloads are the live ones.${tail}`
+          : `${VERDICT_MARKER(normalizeVersion(driftVersion), "passed")}\n${head}: ✅ passed: safe to close${driftClose ? " — closing." : "."}${tail}`,
       });
       if (driftClose) {
         await gh("PATCH", `/repos/${REPO}/issues/${driftIssue}`, { state: "closed", state_reason: "completed" });
@@ -263,9 +269,11 @@ async function reportToDriftIssue(canaryIssueUrl) {
       }
       return;
     }
-    const see = canaryIssueUrl ?? runUrl ?? "(no link)";
+    const see = canaryIssueUrl || runUrl || "(no link)";
+    // A branch run carries no verdict marker: the live sweep's "already failed
+    // for this version" dedupe must only ever see verdicts about the live installer.
     await gh("POST", `/repos/${REPO}/issues/${driftIssue}/comments`, {
-      body: `${VERDICT_MARKER(normalizeVersion(driftVersion), "failed")}\n${head}: ❌ failed at \`${failedStep}\`: see ${see}${tail}`,
+      body: `${testedRef ? "" : `${VERDICT_MARKER(normalizeVersion(driftVersion), "failed")}\n`}${head}: ❌ failed at \`${failedStep}\`: see ${see}${tail}`,
     });
     console.log(`drift #${driftIssue}: failed at ${failedStep}, commented`);
   } catch (e) {
@@ -331,6 +339,7 @@ async function sweepDriftIssues(canaryIssueUrl) {
 }
 
 async function main() {
+  if (testedRef) { await reportToDriftIssue(""); return; }
   const canaryIssueUrl = await reportCanaryIssue();
   await reportToDriftIssue(canaryIssueUrl);
   await sweepDriftIssues(canaryIssueUrl);
