@@ -2832,7 +2832,17 @@ if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
     let c = {};
     try { c = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
     c.plugin = Array.isArray(c.plugin) ? c.plugin : [];
-    if (!c.plugin.includes("acp-opencode")) c.plugin.push("acp-opencode");
+    // The npm package is @agenticcontrolplane/opencode. "acp-opencode" is the
+    // OLD name: deprecated on npm at 0.2.1 ("Renamed to @agenticcontrolplane/opencode"),
+    // so every install that registered it has been loading 0.2.1 — none of the
+    // notices, local metering or the OpenCode 2.0 entry ever reached those
+    // users (gatewaystack-connect#1487). Migrate the old entry in place; keep
+    // the existing order and any options tuple attached to it. (No apostrophes
+    // in this block: it lives inside a single-quoted node -e string.)
+    const PKG = "@agenticcontrolplane/opencode";
+    const isOurs = (e) => e === "acp-opencode" || e === PKG || (Array.isArray(e) && (e[0] === "acp-opencode" || e[0] === PKG));
+    c.plugin = c.plugin.map((e) => (e === "acp-opencode" ? PKG : Array.isArray(e) && e[0] === "acp-opencode" ? [PKG, ...e.slice(1)] : e));
+    if (!c.plugin.some(isOurs)) c.plugin.push(PKG);
     // permission "ask" is what lets ACP allow/ask reach a tool call; fill gaps
     // only, never override a choice the user set deliberately.
     c.permission = c.permission || {};
@@ -2864,11 +2874,11 @@ if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
     }
     fs.writeFileSync(p, JSON.stringify(c, null, 2));
   ' "$OPENCODE_JSON" && {
-    echo "  ${C_GREEN}✓${C_RESET} [opencode] Plugin registered (acp-opencode) + permission gate + introspection MCP + cost X-ray provider"
+    echo "  ${C_GREEN}✓${C_RESET} [opencode] Plugin registered (@agenticcontrolplane/opencode) + permission gate + introspection MCP + cost X-ray provider"
     echo "     Restart opencode — it installs the plugin from npm and governs every tool call."
     INSTALLED="${INSTALLED:+$INSTALLED, }opencode"
   } || {
-    echo "  ${C_RED}✗${C_RESET} [opencode] Config update failed — add \"plugin\": [\"acp-opencode\"] to $OPENCODE_JSON"
+    echo "  ${C_RED}✗${C_RESET} [opencode] Config update failed — add \"plugin\": [\"@agenticcontrolplane/opencode\"] to $OPENCODE_JSON"
   }
 
   # opencode-acp — same shared launcher template as claude-acp / codex-acp.
@@ -2892,7 +2902,7 @@ EOF
 
   # Directive in the global rules file opencode reads (~/.config/opencode/AGENTS.md).
   acp_write_directive "$HOME/.config/opencode/AGENTS.md" "opencode" "~/.acp/bin/opencode-acp" opencode \
-    '- **Tool calls** are governed by the acp-opencode plugin. Nothing extra to do.' \
+    '- **Tool calls** are governed by the @agenticcontrolplane/opencode plugin. Nothing extra to do.' \
     '- The `acp` provider block is already in `~/.config/opencode/opencode.json` and reads `ACP_BEARER_TOKEN`' \
     '  from the environment; do not edit it or set a top-level "model" — the launcher selects `acp/<model>`.'
   echo "  ${C_GREEN}✓${C_RESET} [opencode] ~/.config/opencode/AGENTS.md directive installed — agents launch opencode-acp for priced sessions"
