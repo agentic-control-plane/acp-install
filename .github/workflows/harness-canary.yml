@@ -53,6 +53,11 @@ on:
         required: false
         default: ''
         type: string
+      harness_version:
+        description: Install this upstream version of the chosen leg instead of latest (npm "@<v>", pipx "==<v>", prime-agent tag "v<v>"; opencode falls back to its GitHub installer when npm lacks the version). Lets the drift agent test the exact release it is assessing (gsc#1489).
+        required: false
+        default: ''
+        type: string
       harness:
         description: Which leg to run (all, harnesses, sdks, or one leg id)
         required: false
@@ -162,14 +167,28 @@ jobs:
         id: harness
         env:
           GH_TOKEN: ${{ github.token }}
+          # Empty = latest. One spec helper for every npm leg so a pinned run
+          # and a latest run differ only in the version string.
+          HARNESS_VERSION: ${{ inputs.harness_version || '' }}
         run: |
           set -eo pipefail
+          V="${HARNESS_VERSION#v}"
+          npmspec="@${V:-latest}"
+          [ -z "$V" ] || echo "pinned upstream version: $V"
           case "$HARNESS" in
-            claude-code) npm i -g @anthropic-ai/claude-code@latest;          v="$(claude --version | head -1)" ;;
-            codex)       npm i -g @openai/codex@latest;                       v="$(codex --version | head -1)" ;;
-            opencode)    npm i -g opencode-ai@latest;                         v="$(opencode --version | head -1)" ;;
-            qwen-code)   npm i -g @qwen-code/qwen-code@latest;                v="$(qwen --version | head -1)" ;;
-            pi)          npm i -g @earendil-works/pi-coding-agent@latest; mkdir -p "$HOME/.pi/agent"; v="$(pi --version | head -1)" ;;
+            claude-code) npm i -g "@anthropic-ai/claude-code$npmspec";        v="$(claude --version | head -1)" ;;
+            codex)       npm i -g "@openai/codex$npmspec";                     v="$(codex --version | head -1)" ;;
+            opencode)
+              # 2.0-train tags exist on GitHub before (or without) an npm
+              # release, so a pinned version that npm lacks installs through
+              # opencode's own installer, which honours VERSION.
+              if npm i -g "opencode-ai$npmspec"; then :; elif [ -n "$V" ]; then
+                curl -fsSL https://opencode.ai/install | VERSION="$V" bash
+                echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.opencode/bin:$PATH"
+              else exit 1; fi
+              v="$(opencode --version | head -1)" ;;
+            qwen-code)   npm i -g "@qwen-code/qwen-code$npmspec";              v="$(qwen --version | head -1)" ;;
+            pi)          npm i -g "@earendil-works/pi-coding-agent$npmspec"; mkdir -p "$HOME/.pi/agent"; v="$(pi --version | head -1)" ;;
             prime-agent)
               # Not on npm (gsc#1390). Real install path: versioned GitHub
               # release tarballs (PrimeIntellect-ai/prime-agent), verified
@@ -177,7 +196,8 @@ jobs:
               # release INCLUDING prereleases, because the Rust beta is what
               # `prime-agent update` moves people onto; /releases/latest
               # would pin the old TypeScript stable (v0.9.8).
-              tag="$(gh api repos/PrimeIntellect-ai/prime-agent/releases --jq '[.[] | select(.draft == false)][0].tag_name')"
+              tag="${V:+v$V}"
+              [ -n "$tag" ] || tag="$(gh api repos/PrimeIntellect-ai/prime-agent/releases --jq '[.[] | select(.draft == false)][0].tag_name')"
               test -n "$tag" || { echo "no prime-agent release resolved"; exit 1; }
               ver="${tag#v}"; asset="prime-agent-${ver}-linux-x64.tar.gz"
               pdir="$(mktemp -d)"
@@ -188,11 +208,11 @@ jobs:
               ln -sf "$HOME/.local/share/prime-agent/prime-agent" "$HOME/.local/bin/prime-agent"
               echo "$HOME/.local/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.local/bin:$PATH"
               v="$(prime-agent --version | head -1)" ;;
-            grok)        npm i -g @xai-org/grok-build@latest;                 v="$(grok --version | head -1)" ;;
-            dsh)         npm i -g @deepseek-ai/dsh@latest;                     v="$(dsh --version | head -1)" ;;
-            hermes)      pipx install hermes-agent;                           v="$(hermes --version | head -1)" ;;
-            openclaw)    npm i -g openclaw@latest;                            v="$(openclaw --version | head -1)" ;;
-            muse)        npm i -g muse-code@latest; mkdir -p "$HOME/.config/muse"; v="$(muse --version | head -1)" ;;
+            grok)        npm i -g "@xai-org/grok-build$npmspec";               v="$(grok --version | head -1)" ;;
+            dsh)         npm i -g "@deepseek-ai/dsh$npmspec";                   v="$(dsh --version | head -1)" ;;
+            hermes)      pipx install "hermes-agent${V:+==$V}";                 v="$(hermes --version | head -1)" ;;
+            openclaw)    npm i -g "openclaw$npmspec";                          v="$(openclaw --version | head -1)" ;;
+            muse)        npm i -g "muse-code$npmspec"; mkdir -p "$HOME/.config/muse"; v="$(muse --version | head -1)" ;;
             *) echo "unknown harness $HARNESS"; exit 2 ;;
           esac
           echo "resolved: $v"
