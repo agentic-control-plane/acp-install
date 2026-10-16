@@ -285,7 +285,7 @@ jobs:
             # permission.bash = "ask" for real, attended users. Pre-approve
             # ONLY `echo *` for this one process via OPENCODE_CONFIG_CONTENT
             # (highest-precedence config layer); ~/.config/opencode/opencode.json
-            # stays exactly as the installer wrote it, and the acp-opencode
+            # stays exactly as the installer wrote it, and the @agenticcontrolplane/opencode
             # plugin's tool.execute.before still governs + audits the call.
             opencode)    OPENCODE_CONFIG_CONTENT='{"permission":{"bash":{"echo *":"allow"}}}' \
                          timeout 300 "$HOME/.acp/bin/opencode-acp" run "$prompt" 2>&1 | tee canary-run.log ;;

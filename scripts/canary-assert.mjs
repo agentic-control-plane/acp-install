@@ -130,8 +130,13 @@ function invariants() {
   if (harness === "opencode") {
     const c = readJson(path.join(HOME, ".config", "opencode", "opencode.json"));
     check(c !== null, "~/.config/opencode/opencode.json parses");
-    const n = Array.isArray(c?.plugin) ? c.plugin.filter((p) => p === "acp-opencode").length : 0;
-    check(n === 1, `opencode.json plugin lists acp-opencode exactly once (found ${n})`);
+    // The installer registers the scoped package (site#211); the deprecated
+    // `acp-opencode` name is migrated away, so it must not survive either.
+    const plugins = Array.isArray(c?.plugin) ? c.plugin : [];
+    const n = plugins.filter((p) => p === "@agenticcontrolplane/opencode").length;
+    const legacy = plugins.filter((p) => p === "acp-opencode").length;
+    check(n === 1, `opencode.json plugin lists @agenticcontrolplane/opencode exactly once (found ${n})`);
+    check(legacy === 0, `opencode.json plugin no longer lists the deprecated acp-opencode (found ${legacy})`);
     check(!!c?.provider?.acp, "opencode.json has the acp cost X-ray provider");
     launcher("opencode-acp");
     directiveOnce(".config/opencode/AGENTS.md");
