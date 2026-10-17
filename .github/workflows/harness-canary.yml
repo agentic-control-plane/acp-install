@@ -179,10 +179,14 @@ jobs:
             claude-code) npm i -g "@anthropic-ai/claude-code$npmspec";        v="$(claude --version | head -1)" ;;
             codex)       npm i -g "@openai/codex$npmspec";                     v="$(codex --version | head -1)" ;;
             opencode)
-              # 2.0-train tags exist on GitHub before (or without) an npm
-              # release, so a pinned version that npm lacks installs through
-              # opencode's own installer, which honours VERSION.
-              if npm i -g "opencode-ai$npmspec"; then :; elif [ -n "$V" ]; then
+              # OpenCode 2.x ships on npm as @opencode/cli (opencode-ai has no
+              # 2.x, and opencode.ai/install only installs 1.x), so a pinned
+              # 2.x version installs from there. Other pinned versions that npm
+              # lacks install through opencode's own installer, which honours
+              # VERSION.
+              if [ "${V%%.*}" -ge 2 ] 2>/dev/null; then
+                npm i -g "@opencode/cli@$V"
+              elif npm i -g "opencode-ai$npmspec"; then :; elif [ -n "$V" ]; then
                 curl -fsSL https://opencode.ai/install | VERSION="$V" bash
                 echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.opencode/bin:$PATH"
               else exit 1; fi
@@ -287,8 +291,13 @@ jobs:
             # (highest-precedence config layer); ~/.config/opencode/opencode.json
             # stays exactly as the installer wrote it, and the @agenticcontrolplane/opencode
             # plugin's tool.execute.before still governs + audits the call.
-            opencode)    OPENCODE_CONFIG_CONTENT='{"permission":{"bash":{"echo *":"allow"}}}' \
-                         timeout 300 "$HOME/.acp/bin/opencode-acp" run "$prompt" 2>&1 | tee canary-run.log ;;
+            # OpenCode 2.x: without --standalone, `run` starts a background
+            # service that outlives the process and can hang later runs.
+            opencode)
+              ocmajor="$(opencode --version 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+              standalone=""; [ "${ocmajor:-1}" -ge 2 ] && standalone="--standalone"
+              OPENCODE_CONFIG_CONTENT='{"permission":{"bash":{"echo *":"allow"}}}' \
+                timeout 300 "$HOME/.acp/bin/opencode-acp" run $standalone "$prompt" 2>&1 | tee canary-run.log ;;
             qwen-code)
               # Headless qwen cannot prompt, so without --yolo it declines
               # run_shell_command ("permission ... was declined (non-interactive
