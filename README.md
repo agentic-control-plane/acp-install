@@ -26,7 +26,7 @@ One command. It detects whichever agents you run and puts the same guardrails in
 
 The same policy that stops Claude Code stops Codex. You configure control once, not once per vendor. The default install connects a workspace — free for individuals — with the cost X-ray and a shared console across everyone's agents. `--local` is the fully-private on-device mode; re-run without the flag any time to connect.
 
-Works on macOS + Linux. Requires Node 18+ and one of: Claude Code, Cursor, OpenAI Codex CLI, OpenClaw.
+Works on macOS + Linux. Requires Node 18+ and at least one supported agent: Claude Code, Cursor, OpenAI Codex CLI, GitHub Copilot, OpenClaw, opencode, Qwen Code, pi, Prime Agent, Muse Code, Grok Build, Antigravity, Hermes Agent, DeepSeek Harness.
 
 Want the long version first? [Every file the installer writes, in plain language](https://agenticcontrolplane.com/install-explained) · [getting started](https://agenticcontrolplane.com/getting-started) · per-client guides for [Claude Code](https://agenticcontrolplane.com/integrations/claude-code) and [Codex CLI](https://agenticcontrolplane.com/integrations/codex)
 
@@ -75,24 +75,22 @@ The installer is **idempotent**: running it again upgrades existing entries in p
 
 ## Uninstall
 
-```bash
-# Remove the ACP directory (credentials + govern.mjs)
-rm -rf ~/.acp
+The installer ships the exit with the entrance: `acp-uninstall` is written to `~/.acp/bin` on every install.
 
-# Remove the hooks from each detected client's config:
-# - ~/.claude/settings.json        remove the "govern.mjs" entries under hooks.PreToolUse[] and hooks.PostToolUse[]
-# - ~/.cursor/hooks.json           remove the "govern.mjs" entries under hooks.preToolUse[] and hooks.postToolUse[]
-# - ~/.codex/hooks.json            remove the "govern.mjs" entries under hooks.PreToolUse[] and hooks.PostToolUse[]
-# - ~/.codex/config.toml           remove the [mcp_servers.acp] block, the [model_providers.acp] block, and the [features] hooks line (hooks = true, or codex_hooks = true on older builds)
-# - ~/.codex/AGENTS.md             remove the block between <!-- acp:begin --> and <!-- acp:end --> markers
-# - ~/.zshrc / ~/.bashrc           remove the PATH line marked "# acp-installer" (cloud mode only)
+```bash
+acp-uninstall --dry-run   # preview what would be removed
+acp-uninstall             # remove hook registrations, directive blocks, MCP entries, the PATH line, and ~/.acp
 ```
 
-A one-line `uninstall.sh` is planned. Until then, the blocks above are small enough to remove by hand.
+It runs from a copy cached in `~/.acp` so it works offline, and preserves anything in those config files you wrote yourself. If `~/.acp/bin` is not on your PATH (or the install predates the cached copy):
 
-## Reporting issues
+```bash
+curl -sf https://agenticcontrolplane.com/uninstall.sh | bash
+```
 
-- **Install broke something**: open an issue here → [github.com/agentic-control-plane/acp-install/issues](https://github.com/agentic-control-plane/acp-install/issues)
+## Getting help
+
+- **Install broke or failed**: open an issue → [github.com/agentic-control-plane/acp-install/issues](https://github.com/agentic-control-plane/acp-install/issues), or email [support@agenticcontrolplane.com](mailto:support@agenticcontrolplane.com). Include your OS, the agent(s) you run, and the installer output.
 - **Governance behavior questions**: [agenticcontrolplane.com/faq](https://agenticcontrolplane.com/faq)
 - **Integration details per client**: [agenticcontrolplane.com/integrations](https://agenticcontrolplane.com/integrations)
 
@@ -100,4 +98,4 @@ A one-line `uninstall.sh` is planned. Until then, the blocks above are small eno
 
 MIT — see [LICENSE](LICENSE).
 
-Not a coding-agent CLI? Framework agents use [acp-governance-sdks](https://github.com/agentic-control-plane/acp-governance-sdks); Hermes Agent uses [hermes-acp-plugin](https://github.com/agentic-control-plane/hermes-acp-plugin) (`pip install hermes-acp`).
+Not a coding-agent CLI? Framework agents use [acp-governance-sdks](https://github.com/agentic-control-plane/acp-governance-sdks); Hermes Agent uses [hermes-acp-plugin](https://github.com/agentic-control-plane/hermes-acp-plugin) (`pip install acp-hermes`).
