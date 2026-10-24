@@ -37,6 +37,13 @@ set -e
 #
 #   6. Save the API key to ~/.acp/credentials (chmod 600)
 #
+#   7. Tell ACP whether the install finished: one POST to
+#      $API_BASE/install/report with the outcome, the step that failed,
+#      OS/arch, which clients were chosen, and the exit code — tied to
+#      your workspace if a key is already on this machine. No paths, no
+#      file contents, no command output. Skipped in --local mode; opt
+#      out with ACP_NO_REPORT=1.
+#
 # Usage:
 #   curl -sf https://agenticcontrolplane.com/install.sh | bash
 #
@@ -85,6 +92,55 @@ for _a in "$@"; do case "$_a" in --local|--no-login) LOCAL_MODE=true ;; esac; do
 # no prompt, ~/.acp/credentials is left exactly as it was.
 UPDATE_MODE=false
 for _a in "$@"; do case "$_a" in --update) UPDATE_MODE=true ;; esac; done
+
+# ── Install outcome beacon (step 7 in the header) ─────────────────────
+# A failed install used to end on the user's machine with no trace on
+# ours; the first we heard of one was the user finding another channel
+# (2026-10-22). The EXIT trap below reports a non-zero exit with the step
+# it died in, and prints where to get help. Best-effort by construction:
+# 5s cap, stdin closed, every error swallowed — it can never change the
+# exit code or block the install.
+ACP_INSTALLER_REV="2026-10-22"
+ACP_STEP="start"
+ACP_OUTCOME=""  # set before an intentional non-zero exit that is not a failure
+_ACP_FAIL_AT=""
+_ACP_REPORTED=false
+_acp_report() {  # $1 = failed|completed, $2 = exit code; echoes "sent" on success
+  [ "$LOCAL_MODE" = true ] && return 0
+  [ "${ACP_NO_REPORT:-}" = "1" ] && return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  _ACP_REPORTED=true
+  local harnesses key auth=""
+  harnesses="$(printf '%s' "${TARGETS:-}" | tr 'A-Z' 'a-z' | sed 's/ + /,/g; s/ /-/g')"
+  key="$(head -n 1 "$CREDS_FILE" 2>/dev/null | tr -d '[:space:]')"
+  case "$key" in gsk_*) auth="Authorization: Bearer $key" ;; esac
+  if curl -s -m 5 -o /dev/null -X POST "$API_BASE/install/report" \
+      -H "Content-Type: application/json" ${auth:+-H "$auth"} \
+      -d "{\"outcome\":\"$1\",\"exit_code\":$2,\"step\":\"$ACP_STEP\",\"installer\":\"sh\",\"version\":\"$ACP_INSTALLER_REV\",\"os\":\"$(uname -s | tr 'A-Z' 'a-z')\",\"arch\":\"$(uname -m)\",\"harnesses\":\"$harnesses\",\"env\":\"${CI:+ci}\",\"detail\":\"$_ACP_FAIL_AT\"}" \
+      </dev/null >/dev/null 2>&1; then
+    echo sent
+  fi
+}
+# Where set -e fired: line number + the failing command's program name
+# only (never its arguments — they can carry paths or keys).
+trap '_ACP_FAIL_AT="line $LINENO: $(printf %s "${BASH_COMMAND%% *}" | tr -cd "A-Za-z0-9_./-" | cut -c1-40)"' ERR
+_acp_on_exit() {
+  local code=$?
+  [ "$_ACP_REPORTED" = true ] && return 0
+  [ "$code" -eq 0 ] && return 0
+  local sent outcome="${ACP_OUTCOME:-failed}"
+  # Ctrl-C / kill is the user's choice, not a broken install.
+  case "$code" in 130|143) outcome="aborted" ;; esac
+  sent="$(_acp_report "$outcome" "$code")"
+  [ "$outcome" = aborted ] && return 0
+  echo "" >&2
+  # exit 2 = finished without a key; that banner already said so.
+  [ "$code" -ne 2 ] && [ "$outcome" = failed ] && echo "  Install did not finish (step: $ACP_STEP, exit $code)." >&2
+  [ "$sent" = sent ] && [ "$outcome" = failed ] && echo "  A report (step and exit code only, no file contents or paths) was sent to ACP so we can look into it." >&2
+  echo "  Get help: support@agenticcontrolplane.com · https://github.com/agentic-control-plane/acp-install/issues" >&2
+  echo "" >&2
+}
+trap _acp_on_exit EXIT
 
 # ── Terminal colors ───────────────────────────────────────────────────
 # tput-guarded: green success / red failure / dim secondary, mirroring
@@ -172,6 +228,7 @@ _acp_pin_warn() {
 }
 
 # ── Detect available clients ──────────────────────────────────────────
+ACP_STEP="detect"
 
 HAS_CLAUDE=false
 HAS_CURSOR=false
@@ -274,6 +331,7 @@ for _vsx in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOM
 done
 
 # ── Consent: what we found, and what you actually want governed ────────
+ACP_STEP="consent"
 #
 # Two people signed up on 2026-09-17, looked at what had just been written
 # to their machines, and spent the rest of their session taking it back off.
@@ -824,6 +882,7 @@ if [ "$HAS_CLAUDE" = false ] && [ "$HAS_CURSOR" = false ] && [ "$HAS_CODEX" = fa
   echo "  Guide: https://agenticcontrolplane.com/integrations/prime-agent"
   echo ""
   echo "  Install one first, then re-run this script."
+  ACP_OUTCOME="unsupported"
   exit 1
 fi
 
@@ -887,6 +946,7 @@ echo ""
 mkdir -p "$CONFIG_DIR"
 
 # ── Shared: write govern.mjs ──────────────────────────────────────────
+ACP_STEP="govern_mjs"
 # Single dispatcher script used by non-plugin clients (Cursor, Codex,
 # opencode) and as the Claude Code fallback. The CANONICAL copy lives in
 # the plugin repo (bin/govern.mjs — scoped-token exchange + the govern.*
@@ -2244,6 +2304,7 @@ acp_write_directive() {
 }
 
 # ── Step 1a: Claude Code setup ────────────────────────────────────────
+ACP_STEP="claude_code"
 
 if [ "$HAS_CLAUDE" = true ]; then
   echo "  [Claude Code] Setting up governance..."
@@ -2473,6 +2534,7 @@ EOF
 fi
 
 # ── Step 1b: Cursor setup ────────────────────────────────────────────
+ACP_STEP="cursor"
 
 if [ "$HAS_QWEN" = true ]; then
   echo "  [Qwen Code] Setting up governance hooks..."
@@ -2603,6 +2665,7 @@ if [ "$HAS_CURSOR" = true ]; then
 fi
 
 # ── Step 1c: Codex CLI setup ──────────────────────────────────────────
+ACP_STEP="codex"
 
 if [ "$HAS_CODEX" = true ]; then
   echo "  [Codex] Setting up governance hooks..."
@@ -2790,6 +2853,7 @@ EOF
 fi
 
 # ── Step 1d: OpenClaw setup ───────────────────────────────────────────
+ACP_STEP="openclaw"
 
 if [ "$HAS_OPENCLAW" = true ]; then
   echo "  [OpenClaw] Installing the ACP plugin..."
@@ -2802,6 +2866,7 @@ if [ "$HAS_OPENCLAW" = true ]; then
 fi
 
 # ── Step 1e: opencode setup ───────────────────────────────────────────
+ACP_STEP="opencode"
 
 # Cloud-only: the acp-opencode plugin is npm-fetched by opencode itself and
 # governs via the workspace token — local decisions aren't wired there yet,
@@ -2909,6 +2974,7 @@ EOF
 fi
 
 # ── Step 1f: priced launchers for the plugin-governed harnesses ────────
+ACP_STEP="launchers"
 #
 # Every harness whose model traffic can be pointed at the proxy per launch
 # gets the same "<harness>-acp" launcher from the shared template, plus the
@@ -3163,6 +3229,7 @@ POLICY
 fi
 
 # ── Step 2: Authenticate ──────────────────────────────────────────────
+ACP_STEP="auth"
 
 if [ "$UPDATE_MODE" = true ]; then
   # --update never mints a key. Everything above (govern.mjs, launchers,
@@ -3224,6 +3291,7 @@ echo "  ━━━━━━━━━━━━━━━━━━━━━━━━
 echo ""
 
 # ── Get the key ONTO THIS MACHINE (device code, RFC 8628) ─────────────
+ACP_STEP="device_flow"
 # April's c099916 removed the token paste on the grounds that "browser
 # handles provisioning now". Provisioning did move to the browser — but a
 # web page cannot write ~/.acp/credentials, so *delivery* silently became a
@@ -3269,14 +3337,15 @@ if [ -n "$DEVICE_CODE" ]; then
   echo ""
   echo "      ${C_GREEN}$USER_CODE${C_RESET}"
   echo ""
+  # Always print the URL. Over SSH or on a headless box xdg-open exists but
+  # opens nothing, and a code with nowhere to type it is a dead end.
+  echo "  Approve at: $VERIFY_URL"
   if command -v open > /dev/null 2>&1; then
     open "$VERIFY_URL" 2>/dev/null || true
     echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
   elif command -v xdg-open > /dev/null 2>&1; then
     xdg-open "$VERIFY_URL" 2>/dev/null || true
     echo "  ${C_DIM}Opening your browser (code is pre-filled)…${C_RESET}"
-  else
-    echo "  Approve at: $VERIFY_URL"
   fi
   echo ""
   printf "  %sWaiting for approval (up to %ss; Ctrl+C is safe — re-run any time)%s " \
@@ -3474,8 +3543,11 @@ fi
 # is detectable by a wrapper, a CI check, or the user's shell — not only by
 # reading the banner. Distinct code (2) so it is not confused with a crash.
 if [ "${ACP_UNGOVERNED:-false}" = true ]; then
+  ACP_STEP="no_key"
   exit 2
 fi
+ACP_STEP="done"
+[ "$UPDATE_MODE" = false ] && _acp_report completed 0 >/dev/null
 exit 0
 
 }
