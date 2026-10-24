@@ -2950,14 +2950,21 @@ if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
   # The plugin and the provider block above both read ACP_BEARER_TOKEN.
   # Launch lines: select the ACP provider for this launch. ACP_OPENCODE_MODEL
   # picks the model id behind the proxy (routed by id: gemini-*, gpt-*,
-  # claude-*). Only pass --model when this opencode build advertises it;
-  # otherwise the provider is still in the model picker and nothing breaks.
+  # claude-*). OpenCode 1.x advertises a top-level --model, so pass it.
+  # OpenCode 2.x has no top-level --model (only `run --model`; the TUI has
+  # none), so select the model through OPENCODE_CONFIG_CONTENT, the env config
+  # layer 2.x still reads (packages/core/src/config.ts at v2.0.32), merged into
+  # whatever the caller already put there. An explicit `run --model` the user
+  # passes still wins over a config value. Without this, 2.x silently ran its
+  # own default model and nothing was priced.
   OPENCODE_LAUNCH=$(cat << 'EOF'
 _acp_model="acp/${ACP_OPENCODE_MODEL:-gemini-3.5-flash}"
 if opencode --help 2>&1 | grep -q -- "--model"; then
   opencode --model "$_acp_model" "$@"
+elif _acp_cfg="$(_ACP_MODEL="$_acp_model" node -e 'let c = {}; try { c = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}") } catch (e) {} if (!c || typeof c !== "object" || Array.isArray(c)) c = {}; c.model = process.env._ACP_MODEL; process.stdout.write(JSON.stringify(c))' 2>/dev/null)" && [ -n "$_acp_cfg" ]; then
+  OPENCODE_CONFIG_CONTENT="$_acp_cfg" opencode "$@"
 else
-  echo "opencode-acp: this opencode build has no --model flag — pick $_acp_model in the model picker." >&2
+  echo "opencode-acp: could not select $_acp_model (no --model flag and no node) — pick it in the model picker." >&2
   opencode "$@"
 fi
 EOF
