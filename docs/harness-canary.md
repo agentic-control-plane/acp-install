@@ -170,6 +170,70 @@ node scripts/canary-report.mjs --harness qwen-code --status success --version "0
   --run-url https://example.invalid/run --dry-run --fixture fixture.json
 ```
 
+## TUI ask legs (gatewaystack-connect#1518)
+
+The gateway's attended allowlist (`ATTENDED_ALLOWLIST` in
+`apps/tenant-gateway/src/govern/harnessAsk.ts`) lists (harness, attended
+source) rows. A row is `verified: true` only after a human-equivalent has
+watched that harness render an ACP ask; judge decide mode clears only on
+verified rows. These legs are that human-equivalent.
+
+Run: `gh workflow run harness-canary.yml -R agentic-control-plane/acp-install -f harness=tui-ask [-f tui_answer=n]`.
+They are `workflow_dispatch` only and are not in the scheduled set until a
+run is green.
+
+| Leg | What it proves |
+| --- | --- |
+| `tui-ask-claude-code` | `claude-acp` in a real TUI (tmux, throwaway git repo, trust prompt accepted) is asked to run `echo acp-tui-probe-<run>`. The pane shows `ACP (Agentic Control Plane) asks: `; the probe answers; `canary-assert.mjs ask` finds a `PreToolUse` row (decision `ask`, `attended.claim` true with a `source`, client `claude-code*`) and, for yes, a `PostToolUse` row with reason `harness-approved` (`enforcementReconciler.ts`); for no, no `harness-approved` row. Also requires a `judge` field on the row and prints `judge.held`. |
+| `tui-ask-pi` | Same for `pi-acp --model acp/gemini-3.5-flash`: the extension prompts through `ctx.ui.confirm` when `hasUI` is true. |
+
+`scripts/tui-ask-probe.sh` never passes an approval-skipping flag and refuses
+a launcher that does. The default answer keys are Enter (yes) and Escape (no);
+if a harness dialog differs, the pane log (artifact `tui-ask-<harness>`) shows
+what rendered, and `--yes-keys` / `--no-keys` in the workflow step fix it.
+The audit API must expose `attended` and `judge` on each row (the mapper in
+`apps/tenant-gateway/src/admin/audit.ts` does not yet in the tree this was
+written against); if it does not, the leg fails on `attended.claim` and says
+so. That is a gateway follow-up, not a canary bug.
+
+### From a green run to `verified: true`
+
+1. Dispatch with `tui_answer=y` and again with `n`; both must be green.
+2. Open a gatewaystack-connect PR that sets `verified: true` on that
+   harness's row in `ATTENDED_ALLOWLIST` (pi: `hasUI`; claude-code is already
+   verified) and links both run URLs plus the `tui-ask-<harness>` artifact
+   (the `ASK RENDERED` pane snapshot is the human-equivalent evidence).
+3. A red run means the row stays `verified: false` (or is removed, per the
+   comment on the row).
+
+### Canary-workspace settings a human must apply
+
+These are governance writes; agents must not make them. Apply in the console
+on the canary workspace (`ACP_CANARY_TENANT_SLUG`):
+
+1. **Tenant internal canary flag**: set the workspace's internal/canary flag
+   (see "Which workspace, and the flag it MUST carry" below).
+2. **harness_ask rollout**: enable the `harness_ask` rollout so it admits
+   internal tenants, so a `step_up`/ask decision is delivered as a harness
+   dialog instead of an out-of-band approval.
+3. **Marker ask rule**: a `step_up` (ask) rule on the shell tool whose command
+   matches the prefix `echo acp-tui-probe-`. The marker is
+   `acp-tui-probe-<github run id>-<harness>`, so match the prefix, not one
+   value. Scope it to the interactive tier, not background.
+4. **Judge, shadow**: in the console set the workspace judge to
+   `{"enabled":true,"mode":"shadow","askRouting":"judge_first","backend":"jev"}`.
+   The legs assert the row carries a `judge` field.
+
+Without (3) no ask is raised and the legs fail with "ask never rendered".
+
+### Still to build
+
+- `codex`: judge-only. Codex cannot render a PreToolUse ask (it runs the
+  tool), so assert the judge verdict and held/cleared on the row and that the
+  call is denied; no dialog is expected.
+- `dsh`, `openclaw` (approval-service source), `muse` (PermissionRequest),
+  `prime` (blocked on gsc#1378): need their own launchers and dialog keys.
+
 ## Secrets (repository secrets on agentic-control-plane/acp-install)
 
 | Secret | Used by | Notes |

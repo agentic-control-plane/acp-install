@@ -14,6 +14,11 @@
 //     route is /<slug>/admin/audit (a bare /admin/audit is read as a slug).
 //     On FAIL it prints every row seen in the window with its `decision`.
 //
+//   ask --harness <id> --since <iso Z> --marker <m> [--answer y|n] [--require-judge]
+//     The TUI ask legs (tui-ask-probe.sh): PreToolUse "ask" row with
+//     attended + client, and the harness-approved PostToolUse for a yes.
+//     Details above the ask() function.
+//
 //   rows --harness <id> --since <iso Z>
 //     One GET, then print every audit row in the window with its
 //     `decision` (used by the opencode leg when the harness rejected the
@@ -341,14 +346,105 @@ async function rows() {
   printRows(got.entries);
 }
 
+// ask --harness <id> --since <iso Z> --marker <m> [--answer y|n] [--require-judge] [--timeout <s>]
+//
+// The audit half of the TUI ask legs (scripts/tui-ask-probe.sh drives the
+// dialog; gatewaystack-connect#1518). Finds, in the window since <since>:
+//   PreToolUse row   decision "ask", attended {claim:true, source}, this
+//                    harness's client name, a shell tool. When the API row
+//                    carries any argument preview it must contain the marker.
+//   y: PostToolUse   same session, ts >= the PreToolUse, reason
+//                    "harness-approved" (enforcementReconciler.ts).
+//   n: no row in the window has reason "harness-approved".
+// With --require-judge the PreToolUse row must also carry a `judge` field
+// (workspace judge on, shadow); `judge.held` is printed either way when set.
+//
+// The audit API's field names for attended/judge are read defensively
+// (e.attended, e.judge, or nested under e.meta / e.extra) because the
+// admin audit mapper has to expose them; a row without `attended` FAILS
+// with that diagnosis rather than passing on weaker evidence.
+const pick = (e, k) => e?.[k] ?? e?.meta?.[k] ?? e?.extra?.[k] ?? e?.data?.[k];
+const reasonOf = (e) => String(e?.decisionReason ?? e?.reason ?? "");
+const hookEventOf = (e) => String(e?.hookEvent ?? "");
+
+async function ask() {
+  const target = auditTarget();
+  const { since } = target;
+  const marker = opt("marker", "");
+  const answer = opt("answer", "y");
+  const requireJudge = args.includes("--require-judge");
+  const timeoutMs = Number(opt("timeout", "90")) * 1000;
+  if (!["y", "n"].includes(answer)) { console.error("--answer must be y or n"); process.exit(2); }
+
+  const isShell = (e) => TOOL_MATCH.test(String(e.tool ?? "")) || TOOL_MATCH.test(String(e.toolRaw ?? ""));
+  const mine = (e) => String(e.ts ?? "") >= since && CLIENT_MATCH[harness].test(clientName(e)) && isShell(e);
+  const previewHasMarker = (e) => {
+    const s = JSON.stringify(e);
+    return !marker || s.includes(marker);
+  };
+
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let entries = [];
+  let pre = null, post = null;
+  while (Date.now() < deadline) {
+    const got = await fetchWindow(target);
+    if (got.error !== undefined) { console.log(`audit GET ${got.status ?? "failed"}: ${got.error}; retrying`); await sleep(5000); continue; }
+    entries = got.entries;
+    const rows = entries.filter(mine);
+    // Prefer a row whose payload names the marker; the API often has no preview.
+    const pres = rows.filter((e) => hookEventOf(e) === "PreToolUse" && String(e.decision) === "ask");
+    pre = pres.find((e) => marker && JSON.stringify(e).includes(marker)) ?? pres[0] ?? null;
+    if (pre) {
+      post = rows.find((e) => hookEventOf(e) === "PostToolUse" && String(e.ts) >= String(pre.ts) &&
+        (!pre.sessionId || e.sessionId === pre.sessionId) && /harness-approved/.test(reasonOf(e))) ?? null;
+      // y waits for the PostToolUse; n waits a settle period so a stray
+      // harness-approved row would have landed before we assert its absence.
+      if (answer === "y" ? post : Date.now() - started > 20000) break;
+    }
+    await sleep(5000);
+  }
+
+  check(!!pre, `PreToolUse row with decision "ask" for ${harness}${marker ? ` (run ${marker})` : ""}`);
+  if (pre) {
+    console.log(JSON.stringify({ id: pre.id, ts: pre.ts, tool: pre.tool, client: pre.client, decision: pre.decision, reason: reasonOf(pre), sessionId: pre.sessionId }, null, 2));
+    check(previewHasMarker(pre) || !JSON.stringify(pre).includes("echo"), "row payload names the marker (when the API returns a preview)");
+    const att = pick(pre, "attended");
+    check(!!att && att.claim === true, `attended.claim is true (got ${JSON.stringify(att) ?? "no attended field: the audit API must expose it, gsc#1734 follow-up"})`);
+    check(!!att && typeof att.source === "string" && att.source.length > 0, `attended.source is set (${att?.source ?? "missing"})`);
+    check(CLIENT_MATCH[harness].test(clientName(pre)), `client name matches ${harness} (${clientName(pre)})`);
+    const judge = pick(pre, "judge");
+    if (judge) {
+      console.log(`judge: ${JSON.stringify(judge)}`);
+      if (judge.held) console.log(`judge.held: ${judge.held}`);
+    }
+    if (requireJudge) check(!!judge, "row carries a `judge` field (workspace judge on, shadow)");
+    else if (!judge) console.log("note no judge field on the row (judge off for the workspace, or not exposed by the audit API)");
+  }
+
+  const approved = entries.filter((e) => String(e.ts ?? "") >= since && CLIENT_MATCH[harness].test(clientName(e)) && /harness-approved/.test(reasonOf(e)));
+  if (answer === "y") {
+    check(!!post, `PostToolUse row with reason harness-approved after the yes${post ? ` (${post.ts})` : ""}`);
+  } else {
+    check(approved.length === 0, `no harness-approved row after a no (found ${approved.length})`);
+  }
+  if (failures.length) {
+    console.error("\nrows seen in the window (decision per row):");
+    printRows(entries.filter((e) => String(e.ts ?? "") >= since));
+  }
+}
+
 if (sub === "invariants") {
   invariants();
   if (failures.length) { console.error(`\n${failures.length} invariant(s) failed`); process.exit(1); }
+} else if (sub === "ask") {
+  await ask();
+  if (failures.length) { console.error(`\n${failures.length} ask assertion(s) failed`); process.exit(1); }
 } else if (sub === "audit") {
   await audit();
 } else if (sub === "rows") {
   await rows();
 } else {
-  console.error("usage: canary-assert.mjs <invariants|audit|rows> ...");
+  console.error("usage: canary-assert.mjs <invariants|audit|rows|ask> ...");
   process.exit(2);
 }

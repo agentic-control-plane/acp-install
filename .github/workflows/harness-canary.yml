@@ -67,6 +67,7 @@ on:
           - all
           - harnesses
           - sdks
+          - tui-ask
           - claude-code
           - codex
           - opencode
@@ -85,6 +86,14 @@ on:
           - sdk-langchain
           - sdk-pydantic-ai
           - sdk-crewai
+      tui_answer:
+        description: tui-ask legs only. Answer the TUI dialog yes (y, expects a harness-approved PostToolUse row) or no (n, expects none).
+        required: false
+        default: 'y'
+        type: choice
+        options:
+          - 'y'
+          - 'n'
   repository_dispatch:
     types: [harness-release]
 
@@ -118,10 +127,127 @@ jobs:
           case "$WANT" in
             all)       echo "harnesses=$ALL_HARNESSES" >> "$GITHUB_OUTPUT"; echo "sdks=$ALL_SDKS" >> "$GITHUB_OUTPUT" ;;
             harnesses) echo "harnesses=$ALL_HARNESSES" >> "$GITHUB_OUTPUT"; echo "sdks=[]" >> "$GITHUB_OUTPUT" ;;
+            tui-ask)   echo "harnesses=[]" >> "$GITHUB_OUTPUT"; echo "sdks=[]" >> "$GITHUB_OUTPUT" ;;
             sdks)      echo "harnesses=[]" >> "$GITHUB_OUTPUT"; echo "sdks=$ALL_SDKS" >> "$GITHUB_OUTPUT" ;;
             sdk-*)     echo "harnesses=[]" >> "$GITHUB_OUTPUT"; echo "sdks=[\"$WANT\"]" >> "$GITHUB_OUTPUT" ;;
             *)         echo "harnesses=[\"$WANT\"]" >> "$GITHUB_OUTPUT"; echo "sdks=[]" >> "$GITHUB_OUTPUT" ;;
           esac
+
+  # TUI ask legs (gatewaystack-connect#1518). workflow_dispatch ONLY, with
+  # harness=tui-ask; never on the schedule until a run is green. Each leg
+  # drives the real harness TUI in tmux (scripts/tui-ask-probe.sh), proves
+  # the ACP ask text rendered in a dialog, answers it, then asserts the
+  # PreToolUse "ask" row (attended + client) and, for yes, the
+  # harness-approved PostToolUse row (scripts/canary-assert.mjs ask).
+  # Needs the canary workspace settings in docs/harness-canary.md ("TUI ask
+  # legs"); those are governance writes a human applies in the console.
+  #
+  # TODO(#1518) legs still to add:
+  #   codex     judge-only: no dialog (a PreToolUse ask fails open), the call
+  #             is denied. Assert the judge verdict + held/cleared on the row.
+  #   dsh       approval-service source; needs its own TUI keys.
+  #   openclaw  approval-service source; daemon, needs a client TUI.
+  #   muse      permission_mode source; PermissionRequest dialog.
+  #   prime     hasUI source; blocked on gsc#1378 (Rust rewrite, no extension loader).
+  tui-ask:
+    needs: select
+    if: github.event_name == 'workflow_dispatch' && inputs.harness == 'tui-ask'
+    name: tui-ask-${{ matrix.harness }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [claude-code, pi]
+    concurrency:
+      group: harness-canary-${{ matrix.harness }}
+      cancel-in-progress: false
+    env:
+      HARNESS: ${{ matrix.harness }}
+      ANSWER: ${{ inputs.tui_answer || 'y' }}
+      MARKER: acp-tui-probe-${{ github.run_id }}
+      ACP_BASE_URL: https://api.agenticcontrolplane.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install tmux
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+
+      - name: Install current released harness
+        run: |
+          set -eo pipefail
+          case "$HARNESS" in
+            claude-code) npm i -g @anthropic-ai/claude-code@latest;            claude --version | head -1 ;;
+            pi)          npm i -g @earendil-works/pi-coding-agent@latest; mkdir -p "$HOME/.pi/agent"; pi --version | head -1 ;;
+            *) echo "no tui-ask leg for $HARNESS"; exit 2 ;;
+          esac
+
+      - name: Seed ACP credentials (skips the device flow)
+        env:
+          ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
+        run: |
+          set -e
+          test -n "$ACP_CANARY_KEY" || { echo "ACP_CANARY_KEY secret is not set"; exit 2; }
+          mkdir -p "$HOME/.acp"
+          printf '%s\n' "$ACP_CANARY_KEY" > "$HOME/.acp/credentials"
+          chmod 600 "$HOME/.acp/credentials"
+
+      - name: Install ACP via the live installer
+        run: |
+          set -eo pipefail
+          curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- "--only=$HARNESS" 2>&1 | tee acp-install.log
+          echo "CANARY_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+      - name: Drive the TUI and answer the ACP ask
+        id: probe
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.harness == 'claude-code' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          case "$HARNESS" in
+            claude-code)
+              test -n "$CLAUDE_CODE_OAUTH_TOKEN" || { echo "CLAUDE_CODE_OAUTH_TOKEN secret is not set"; exit 2; }
+              launcher="$HOME/.acp/bin/claude-acp" ;;
+            pi) launcher="$HOME/.acp/bin/pi-acp --model acp/gemini-3.5-flash" ;;
+          esac
+          bash scripts/tui-ask-probe.sh --harness "$HARNESS" --launcher "$launcher" \
+            --marker "$MARKER-$HARNESS" --answer "$ANSWER" --timeout 150 --out-dir tui-out 2>&1 | tee tui-ask-probe.log
+
+      - name: Assert the ask round-tripped to the audit log
+        id: audit
+        if: always() && steps.probe.outcome != 'skipped'
+        env:
+          ACP_CANARY_KEY: ${{ secrets.ACP_CANARY_KEY }}
+          ACP_TENANT_SLUG: ${{ vars.ACP_CANARY_TENANT_SLUG }}
+        run: |
+          set -eo pipefail
+          test -n "$ACP_TENANT_SLUG" || { echo "ACP_CANARY_TENANT_SLUG repository variable is not set"; exit 2; }
+          node scripts/canary-assert.mjs ask --harness "$HARNESS" --since "$CANARY_SINCE" \
+            --marker "$MARKER-$HARNESS" --answer "$ANSWER" --require-judge --timeout 90 2>&1 | tee canary-ask-audit.log
+
+      - name: Record the verification run
+        if: always()
+        run: |
+          {
+            echo "### tui-ask-$HARNESS (answer=$ANSWER)"
+            echo "probe: ${{ steps.probe.outcome }} / audit: ${{ steps.audit.outcome }}"
+            echo "run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "A green run is the evidence for flipping this harness's attended row to verified: true (docs/harness-canary.md)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tui-ask-${{ matrix.harness }}
+          path: |
+            tui-out/
+            tui-ask-probe.log
+            canary-ask-audit.log
+          if-no-files-found: ignore
 
   canary:
     needs: select
