@@ -215,13 +215,19 @@ jobs:
             grok)        npm i -g "@xai-org/grok-build$npmspec";               v="$(grok --version | head -1)" ;;
             dsh)         npm i -g "@deepseek-ai/dsh$npmspec";                   v="$(dsh --version | head -1)" ;;
             hermes)
-              # PyPI's hermes-agent stopped at 0.19.0 (July); upstream ships
-              # releases as GitHub tags and its install.sh installs from those,
-              # so install the release tag (latest unless pinned) from git.
-              htag="v${V}"
-              [ -n "$V" ] || htag="$(gh release view -R NousResearch/hermes-agent --json tagName -q .tagName)"
-              pipx install "git+https://github.com/NousResearch/hermes-agent@${htag}"
-              v="$(hermes --version | head -1)" ;;
+              # PyPI's hermes-agent stopped at 0.19.0 (July) and upstream's
+              # setup.py refuses wheel/sdist builds, so pip/pipx (from PyPI or
+              # git) cannot install a current release. Use the official shell
+              # installer, which is what users run. It installs the latest
+              # release only, so a pinned run fails loudly on a mismatch.
+              curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+              for d in "$HOME/.local/bin" "$HOME/.hermes/bin"; do
+                [ -d "$d" ] && { echo "$d" >> "$GITHUB_PATH"; export PATH="$d:$PATH"; }
+              done
+              v="$(hermes --version | head -1)"
+              if [ -n "$V" ] && ! printf '%s' "$v" | grep -qF "v$V"; then
+                echo "pinned $V but the installer gave: $v (it installs latest only)"; exit 1
+              fi ;;
             openclaw)    npm i -g "openclaw$npmspec";                          v="$(openclaw --version | head -1)" ;;
             muse)        npm i -g "muse-code$npmspec"; mkdir -p "$HOME/.config/muse"; v="$(muse --version | head -1)" ;;
             *) echo "unknown harness $HARNESS"; exit 2 ;;
