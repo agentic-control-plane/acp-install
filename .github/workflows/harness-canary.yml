@@ -253,6 +253,34 @@ jobs:
             [ -f "$HOME/.qwen/settings.json" ] || printf '{ "security": { "auth": { "selectedType": "openai" } } }\n' > "$HOME/.qwen/settings.json"
           fi
 
+      # acp-install#64: start the Claude Code leg from the state a long-lived
+      # machine is in — an OLD plugin release ACTIVE — so the installer's job
+      # is to upgrade, not to install. The marketplace is added from GitHub
+      # (what users have), its clone is rewound to the 0.27.0 release, and the
+      # plugin is installed from that. The installer's `marketplace update`
+      # then fast-forwards the clone and its `plugin update` must switch the
+      # active version; the invariants assert active == marketplace manifest
+      # and != this seed. Before the fix, `plugin install` on an installed
+      # plugin was a no-op and the leg would have stayed green on 0.27.0.
+      - name: Seed an OLD ACP plugin release (acp-install#64)
+        id: seed_old_plugin
+        if: matrix.harness == 'claude-code'
+        env:
+          OLD_PLUGIN_REF: 80f1b3bffcc4dec58d78f4c4e88d9c091cd724b3   # claude-code-acp-plugin 0.27.0
+          OLD_PLUGIN_VERSION: 0.27.0
+        run: |
+          set -eo pipefail
+          claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin
+          mp="$(node -e 'const k=require(process.env.HOME+"/.claude/plugins/known_marketplaces.json");process.stdout.write(k.acp.installLocation)')"
+          echo "marketplace clone: $mp"
+          git -C "$mp" fetch --unshallow origin 2>/dev/null || git -C "$mp" fetch origin
+          git -C "$mp" reset --hard "$OLD_PLUGIN_REF"
+          claude plugin install agentic-control-plane@acp
+          active="$(node -e 'const j=require(process.env.HOME+"/.claude/plugins/installed_plugins.json");const e=j.plugins["agentic-control-plane@acp"];process.stdout.write(String((Array.isArray(e)?e[0]:e).version))')"
+          echo "seeded ACTIVE plugin version: $active (clone at $OLD_PLUGIN_REF)"
+          [ "$active" = "$OLD_PLUGIN_VERSION" ] || { echo "::error::expected the seed to activate $OLD_PLUGIN_VERSION, got '$active'"; exit 1; }
+          echo "ACP_CANARY_OLD_PLUGIN_VERSION=$active" >> "$GITHUB_ENV"
+
       - name: Install ACP via the live installer (or a draft branch)
         id: acp_install
         env:
@@ -369,6 +397,7 @@ jobs:
           DRIFT_CLOSE: ${{ (inputs.drift_issue || inputs.install_ref || (github.event.client_payload.drift_issue && github.event.client_payload.close_on_pass == false)) && 'off' || '' }}
           O_HARNESS: ${{ steps.harness.outcome }}
           O_SEED: ${{ steps.seed.outcome }}
+          O_SEED_OLD_PLUGIN: ${{ steps.seed_old_plugin.outcome }}
           O_INSTALL: ${{ steps.acp_install.outcome }}
           O_INVARIANTS: ${{ steps.invariants.outcome }}
           O_CALL: ${{ steps.call.outcome }}
@@ -376,6 +405,8 @@ jobs:
         run: |
           set -e
           steps="install-harness:$O_HARNESS: seed-credentials:$O_SEED: install-acp:$O_INSTALL:acp-install.log install-invariants:$O_INVARIANTS:canary-invariants.log"
+          # claude-code only: the old-plugin seed (acp-install#64) is on its list.
+          [ "$HARNESS" != "claude-code" ] || steps="install-harness:$O_HARNESS: seed-credentials:$O_SEED: seed-old-plugin:$O_SEED_OLD_PLUGIN: install-acp:$O_INSTALL:acp-install.log install-invariants:$O_INVARIANTS:canary-invariants.log"
           case "$LIVE_LEGS" in *" $HARNESS "*)
             steps="$steps governed-call:$O_CALL:canary-run.log,canary-audit.log audit-row:$O_AUDIT:canary-run.log,canary-audit.log" ;;
           esac

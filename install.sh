@@ -172,9 +172,9 @@ fi
 # and paste the digest. Hook fixes now reach machines with the installer
 # release (or `acp-update`, which re-runs this installer), not on every push.
 ACP_PIN_GOVERN_REPO="claude-code-acp-plugin"
-# Plugin 0.28.0 (main cb043a8e).
-ACP_PIN_GOVERN_REF="cb043a8e81f0d8382dba9e45a4e9ed7ec4c8606c"
-ACP_PIN_GOVERN_SHA="1ff4fd77ba62a23a24c81b7dcbd2c6c2c1a71393ff5df2b954c2028b969867a8"
+# Plugin 0.29.5 (main 67b107c5).
+ACP_PIN_GOVERN_REF="67b107c50d4b42e9d85d6d2199c0b334a03f815a"
+ACP_PIN_GOVERN_SHA="0228ada85ecb65c6e4a8a64642927ed72ad6233ec01a44681d902f6ca627318d"
 ACP_PIN_PI_REF="e27c427621c6a6c4948e95ca87cfd2c97c27c20d"
 ACP_PIN_PI_INDEX_SHA="cf8c50c0ed57c596f965be1a3f8a958d9a8b9b0dc9f8e1377e4286ca39e127c1"
 ACP_PIN_PRIME_REF="4043829b9acdaa2d258ca5237166fcc7910bfd14"
@@ -219,6 +219,41 @@ _acp_fetch_pinned() {
   mv -f "$_pf_tmp" "$_pf_dest" || { rm -f "$_pf_tmp"; ACP_PIN_FAIL="download"; return 1; }
   ACP_PIN_FAIL=""
   return 0
+}
+
+# Active version of the ACP plugin from Claude Code's own registry
+# (~/.claude/plugins/installed_plugins.json; v1 object or v2 array shape).
+# Empty when not installed or unreadable. `claude plugin list` prints the
+# same thing, but its output format is not a contract (acp-install#64).
+_acp_claude_plugin_active_version() {
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const p = path.join(process.argv[1], ".claude", "plugins", "installed_plugins.json");
+    let j; try { j = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(0); }
+    const e = j && j.plugins && j.plugins["agentic-control-plane@acp"];
+    const v = Array.isArray(e) ? (e.find((x) => x && x.scope === "user") || e[0] || {}).version : e && e.version;
+    if (typeof v === "string" && /^\d+\.\d+\.\d+/.test(v)) process.stdout.write(v.trim());
+  ' "$HOME" 2>/dev/null
+}
+
+# Version the LOCAL marketplace clone's manifest says is current — what
+# `claude plugin marketplace update acp` just fetched. Empty when the clone
+# is missing or unreadable.
+_acp_claude_marketplace_version() {
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const pd = path.join(process.argv[1], ".claude", "plugins");
+    let loc = path.join(pd, "marketplaces", "acp");
+    try {
+      const k = JSON.parse(fs.readFileSync(path.join(pd, "known_marketplaces.json"), "utf8"));
+      if (k && k.acp && typeof k.acp.installLocation === "string" && k.acp.installLocation.trim()) loc = k.acp.installLocation.trim();
+    } catch {}
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(loc, ".claude-plugin", "marketplace.json"), "utf8"));
+      const e = (Array.isArray(m.plugins) ? m.plugins : []).find((x) => x && x.name === "agentic-control-plane");
+      if (e && typeof e.version === "string" && /^\d+\.\d+\.\d+/.test(e.version)) process.stdout.write(e.version.trim());
+    } catch {}
+  ' "$HOME" 2>/dev/null
 }
 
 # One-line warning when a pinned download was REJECTED (not merely offline).
@@ -2311,15 +2346,44 @@ if [ "$HAS_CLAUDE" = true ]; then
 
   # ── Preferred path (#295): install the PLUGIN. It carries the hooks,
   #    the /cost-xray + /acp skills, AND the bundled ACP MCP server, with
-  #    marketplace version tracking — users actually receive updates.
-  #    Falls back to direct hook wiring on older Claude Code CLIs.
+  #    marketplace version tracking. Falls back to direct hook wiring on
+  #    older Claude Code CLIs.
+  #
+  #    acp-install#64: `claude plugin install` is a NO-OP on a plugin that is
+  #    already installed — it never switches the active version, even after
+  #    `marketplace update` has put a newer release in the cache (a machine
+  #    sat on 0.27.0 with 0.29.5 downloaded, every installer run "succeeded").
+  #    Only `claude plugin update` switches it. So: update when present,
+  #    install when absent, then read the ACTIVE version back from Claude
+  #    Code's own registry and compare it with the marketplace manifest —
+  #    and print what actually happened, not a hope.
   CLAUDE_PLUGIN_OK=false
-  if claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin >/dev/null 2>&1 \
-     || claude plugin marketplace update acp >/dev/null 2>&1; then
-    claude plugin install agentic-control-plane@acp >/dev/null 2>&1 || true
-    if claude plugin list 2>/dev/null | grep -q "agentic-control-plane"; then
-      CLAUDE_PLUGIN_OK=true
+  CLAUDE_PLUGIN_MARKET_OK=false
+  CLAUDE_PLUGIN_BEFORE="$(_acp_claude_plugin_active_version)"
+  if [ -n "$(_acp_claude_marketplace_version)" ]; then
+    # Marketplace already registered: refresh its clone (add would be a no-op).
+    if claude plugin marketplace update acp >/dev/null 2>&1 \
+       || claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin >/dev/null 2>&1; then
+      CLAUDE_PLUGIN_MARKET_OK=true
     fi
+  elif claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin >/dev/null 2>&1 \
+       || claude plugin marketplace update acp >/dev/null 2>&1; then
+    CLAUDE_PLUGIN_MARKET_OK=true
+  fi
+  if [ "$CLAUDE_PLUGIN_MARKET_OK" = true ]; then
+    if [ -n "$CLAUDE_PLUGIN_BEFORE" ]; then
+      # `plugin update` is missing on older CLIs; the install fallback keeps
+      # the plugin present and the version check below says what it means.
+      claude plugin update agentic-control-plane@acp >/dev/null 2>&1 \
+        || claude plugin install agentic-control-plane@acp >/dev/null 2>&1 || true
+    else
+      claude plugin install agentic-control-plane@acp >/dev/null 2>&1 || true
+    fi
+  fi
+  CLAUDE_PLUGIN_AFTER="$(_acp_claude_plugin_active_version)"
+  CLAUDE_PLUGIN_MARKET_VER="$(_acp_claude_marketplace_version)"
+  if [ -n "$CLAUDE_PLUGIN_AFTER" ] || claude plugin list 2>/dev/null | grep -q "agentic-control-plane"; then
+    CLAUDE_PLUGIN_OK=true
   fi
 
   CLAUDE_SETTINGS="$HOME/.claude/settings.json"
@@ -2358,7 +2422,29 @@ if [ "$HAS_CLAUDE" = true ]; then
         if (c.mcpServers && c.mcpServers.acp) { delete c.mcpServers.acp; fs.writeFileSync(p, JSON.stringify(c, null, 2)); }
       " "$CLAUDE_JSON"
     fi
-    echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin installed (hooks + skills + MCP, auto-updating)"
+    # Say what happened, with the versions read back — never "auto-updating":
+    # Claude Code does not auto-update a third-party marketplace plugin, and
+    # this installer only just learned to (acp-install#64).
+    if [ -n "$CLAUDE_PLUGIN_BEFORE" ] && [ -n "$CLAUDE_PLUGIN_AFTER" ] && [ "$CLAUDE_PLUGIN_BEFORE" != "$CLAUDE_PLUGIN_AFTER" ]; then
+      echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin updated v$CLAUDE_PLUGIN_BEFORE → v$CLAUDE_PLUGIN_AFTER (hooks + skills + MCP) — restart Claude Code to run it"
+    elif [ -n "$CLAUDE_PLUGIN_BEFORE" ]; then
+      echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin v$CLAUDE_PLUGIN_BEFORE (hooks + skills + MCP)"
+    else
+      echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin installed v${CLAUDE_PLUGIN_AFTER:-?} (hooks + skills + MCP)"
+    fi
+    if [ -n "$CLAUDE_PLUGIN_MARKET_VER" ] && [ -n "$CLAUDE_PLUGIN_AFTER" ] && [ "$CLAUDE_PLUGIN_MARKET_VER" != "$CLAUDE_PLUGIN_AFTER" ]; then
+      echo ""
+      echo "  ${C_RED}! [Claude Code] the ACTIVE ACP plugin is v$CLAUDE_PLUGIN_AFTER but the marketplace has v$CLAUDE_PLUGIN_MARKET_VER.${C_RESET}"
+      echo "    This installer could not switch it (your Claude Code may predate \`claude plugin update\`)."
+      echo "    Run exactly:"
+      echo "      ${C_RED}claude plugin update agentic-control-plane@acp${C_RESET}"
+      echo "    then restart Claude Code. Until then every session runs v$CLAUDE_PLUGIN_AFTER."
+      echo ""
+    elif [ "$CLAUDE_PLUGIN_MARKET_OK" != true ]; then
+      echo "    (the plugin marketplace was unreachable — the plugin stays at v${CLAUDE_PLUGIN_AFTER:-?}; re-run this installer online to pick up updates)"
+    elif [ -z "$CLAUDE_PLUGIN_MARKET_VER" ] || [ -z "$CLAUDE_PLUGIN_AFTER" ]; then
+      echo "    (could not read the plugin registry to verify the version — check with: claude plugin list)"
+    fi
   else
     # Fallback for Claude Code CLIs without plugin-marketplace support:
     # direct hook wiring + user-scope MCP, exactly as before.
@@ -2466,7 +2552,7 @@ if [ "$HAS_CLAUDE" = true ]; then
     echo "    if the plugin copy is stale, runs code you are not tracking."
     echo "    Pick ONE — we don't edit hook config for you:"
     echo "      keep the installer's (simplest):  claude plugin uninstall agentic-control-plane"
-    echo "      or keep the plugin's:             claude plugin update agentic-control-plane"
+    echo "      or keep the plugin's:             claude plugin update agentic-control-plane@acp"
     echo "                                        then remove the govern.mjs hook from $CLAUDE_SETTINGS"
     echo ""
   fi
