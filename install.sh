@@ -18,6 +18,18 @@ set -e
 #       files each one touches, before writing anything at all. Enter
 #       takes everything found; `n` writes nothing and exits.
 #
+#   1c. Safety floor: force-push, destructive SQL handed to a database
+#       client, curl|sh and recursive deletes outside your project wait
+#       for a person, in every harness above. ON for everyone. With a
+#       terminal you are asked "Keep the safety floor on? (Y/n)"; `n`
+#       turns it off (back on any time from the console's Policies page).
+#       Turning the floor off always needs a typed answer: with no
+#       terminal (curl|bash in CI, an agent re-running this) it stays on,
+#       and ACP_FLOOR=off only changes the question to "Turn the safety
+#       floor off for this workspace? (y/N)", read from the terminal.
+#       --all/--only skip the Y/n question. --local prints the floor line
+#       and asks nothing. Only a typed answer is reported (step 7).
+#
 #   2. Write ~/.acp/govern.mjs (the hook dispatcher script — shared across clients)
 #
 #   3. Register PreToolUse + PostToolUse hooks in each detected client's config:
@@ -39,7 +51,8 @@ set -e
 #
 #   7. Tell ACP whether the install finished: one POST to
 #      $API_BASE/install/report with the outcome, the step that failed,
-#      OS/arch, which clients were chosen, and the exit code — tied to
+#      OS/arch, which clients were chosen, the safety floor answer if you
+#      typed one (step 1c; `floor` is absent otherwise), and the exit code — tied to
 #      your workspace if a key is already on this machine. No paths, no
 #      file contents, no command output. Skipped in --local mode; opt
 #      out with ACP_NO_REPORT=1.
@@ -100,23 +113,31 @@ for _a in "$@"; do case "$_a" in --update) UPDATE_MODE=true ;; esac; done
 # it died in, and prints where to get help. Best-effort by construction:
 # 5s cap, stdin closed, every error swallowed — it can never change the
 # exit code or block the install.
-ACP_INSTALLER_REV="2026-10-22"
+ACP_INSTALLER_REV="2026-11-07"
 ACP_STEP="start"
 ACP_OUTCOME=""  # set before an intentional non-zero exit that is not a failure
 _ACP_FAIL_AT=""
 _ACP_REPORTED=false
+# Safety floor answer (step 1c). The env value is only a request, read once
+# here; ACP_FLOOR itself is set to on|off by the floor step only when a
+# person typed an answer, and stays empty otherwise (no tty, --all/--only,
+# --update), so the beacon then omits the field: the gateway treats absent
+# as "no change" and keeps the first answer it recorded.
+_ACP_FLOOR_ENV="${ACP_FLOOR:-}"
+ACP_FLOOR=""
 _acp_report() {  # $1 = failed|completed, $2 = exit code; echoes "sent" on success
   [ "$LOCAL_MODE" = true ] && return 0
   [ "${ACP_NO_REPORT:-}" = "1" ] && return 0
   command -v curl >/dev/null 2>&1 || return 0
   _ACP_REPORTED=true
-  local harnesses key auth=""
+  local harnesses key auth="" floor_field=""
+  case "$ACP_FLOOR" in on|off) floor_field=",\"floor\":\"$ACP_FLOOR\"" ;; esac
   harnesses="$(printf '%s' "${TARGETS:-}" | tr 'A-Z' 'a-z' | sed 's/ + /,/g; s/ /-/g')"
   key="$(head -n 1 "$CREDS_FILE" 2>/dev/null | tr -d '[:space:]')"
   case "$key" in gsk_*) auth="Authorization: Bearer $key" ;; esac
   if curl -s -m 5 -o /dev/null -X POST "$API_BASE/install/report" \
       -H "Content-Type: application/json" ${auth:+-H "$auth"} \
-      -d "{\"outcome\":\"$1\",\"exit_code\":$2,\"step\":\"$ACP_STEP\",\"installer\":\"sh\",\"version\":\"$ACP_INSTALLER_REV\",\"os\":\"$(uname -s | tr 'A-Z' 'a-z')\",\"arch\":\"$(uname -m)\",\"harnesses\":\"$harnesses\",\"env\":\"${CI:+ci}\",\"detail\":\"$_ACP_FAIL_AT\"}" \
+      -d "{\"outcome\":\"$1\",\"exit_code\":$2,\"step\":\"$ACP_STEP\",\"installer\":\"sh\",\"version\":\"$ACP_INSTALLER_REV\",\"os\":\"$(uname -s | tr 'A-Z' 'a-z')\",\"arch\":\"$(uname -m)\",\"harnesses\":\"$harnesses\",\"env\":\"${CI:+ci}\",\"detail\":\"$_ACP_FAIL_AT\"$floor_field}" \
       </dev/null >/dev/null 2>&1; then
     echo sent
   fi
@@ -566,6 +587,47 @@ if [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = false ]; then
     echo "  Re-run and pick by number, or: --only=claude-code"
     echo ""
     exit 0
+  fi
+
+  # ── Step 1c: safety floor (gsc#1865) ───────────────────────────────
+  # On for everyone. Turning it off takes a person at a real terminal, the
+  # same way "Reconfigure?" below does: no /dev/tty (curl|bash in CI, an
+  # agent re-running this) means on, and ACP_FLOOR=off is honoured only when
+  # a terminal is present too. --all/--only skip the question; floor on.
+  # Opening /dev/tty (not just -r) is the real test: the node is readable
+  # even when there is no controlling terminal to open.
+  # ACP_FLOOR is set ONLY when a person typed an answer (Enter on the Y/n
+  # question counts as "on"). Every other path leaves it empty, so the beacon
+  # carries no `floor` field and the workspace records no choice nobody made.
+  # A terminal proves a terminal, not a person (an agent inside tmux has
+  # one), so even ACP_FLOOR=off waits for a typed "y" before it counts.
+  ACP_FLOOR=""
+  echo ""
+  if [ "$LOCAL_MODE" = true ]; then
+    echo "  Safety floor: rm -rf /, mkfs and fork bombs are always refused; force-push, destructive SQL, curl|sh and deletes outside the working directory ask first, in every harness above. (on)"
+  else
+    echo "  Safety floor: on. Force-push, destructive SQL and curl|sh wait for a person in every harness above. Your Policies page shows whether it is live for this workspace yet."
+    if ( : </dev/tty ) 2>/dev/null; then
+      _floor_reply=""
+      if [ "$_ACP_FLOOR_ENV" = off ]; then
+        printf "  Turn the safety floor off for this workspace? (y/N) "
+        if read -r _floor_reply </dev/tty 2>/dev/null; then
+          _floor_reply="$(printf '%s' "$_floor_reply" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
+          case "$_floor_reply" in y|yes) ACP_FLOOR=off ;; *) ACP_FLOOR=on ;; esac
+        fi
+      elif [ -z "$ACP_ONLY" ]; then
+        printf "  Keep the safety floor on? (Y/n) "
+        if read -r _floor_reply </dev/tty 2>/dev/null; then
+          _floor_reply="$(printf '%s' "$_floor_reply" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
+          case "$_floor_reply" in n|no) ACP_FLOOR=off ;; *) ACP_FLOOR=on ;; esac
+        fi
+      fi
+    elif [ "$_ACP_FLOOR_ENV" = off ]; then
+      echo "  ${C_DIM}ACP_FLOOR=off ignored: turning the floor off needs a terminal. It stays on.${C_RESET}"
+    fi
+    if [ "$ACP_FLOOR" = off ]; then
+      echo "  Safety floor off for this workspace. Turn it back on any time from the console's Policies page."
+    fi
   fi
 
   # The gate reaches every install block below through these flags alone —
@@ -3397,6 +3459,12 @@ if [ -f "$CREDS_FILE" ]; then
     echo "  You're all set. View your audit logs:"
     echo "  $DASHBOARD_BASE/activity"
     echo ""
+    # Hooks were rewritten with the existing key, so this is a finished
+    # install; report it so a typed floor answer (step 1c) reaches the
+    # workspace (no answer typed = no `floor` field). step=rerun keeps these out of the first-install funnel (install_completed
+    # with step=done is the number the funnel counts).
+    ACP_STEP="rerun"
+    _acp_report completed 0 >/dev/null
     exit 0
   fi
 fi
