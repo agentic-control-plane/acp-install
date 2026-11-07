@@ -172,9 +172,9 @@ fi
 # and paste the digest. Hook fixes now reach machines with the installer
 # release (or `acp-update`, which re-runs this installer), not on every push.
 ACP_PIN_GOVERN_REPO="claude-code-acp-plugin"
-# Plugin 0.29.5 (main 67b107c5).
-ACP_PIN_GOVERN_REF="67b107c50d4b42e9d85d6d2199c0b334a03f815a"
-ACP_PIN_GOVERN_SHA="0228ada85ecb65c6e4a8a64642927ed72ad6233ec01a44681d902f6ca627318d"
+# Plugin 0.29.6 (main 09d0e01c).
+ACP_PIN_GOVERN_REF="09d0e01c3cfe1b7a5c9846f5bb695dbdbd5d8b25"
+ACP_PIN_GOVERN_SHA="e654de2ac473e893cf5803c10c8606affa0f324e149762d7027d5a011ebaaa63"
 ACP_PIN_PI_REF="e27c427621c6a6c4948e95ca87cfd2c97c27c20d"
 ACP_PIN_PI_INDEX_SHA="cf8c50c0ed57c596f965be1a3f8a958d9a8b9b0dc9f8e1377e4286ca39e127c1"
 ACP_PIN_PRIME_REF="4043829b9acdaa2d258ca5237166fcc7910bfd14"
@@ -254,6 +254,18 @@ _acp_claude_marketplace_version() {
       if (e && typeof e.version === "string" && /^\d+\.\d+\.\d+/.test(e.version)) process.stdout.write(e.version.trim());
     } catch {}
   ' "$HOME" 2>/dev/null
+}
+
+# _acp_semver_gt A B — 0 when A is a strictly newer x.y.z than B. Non-numeric
+# suffixes ("-fallback", "-rc1") are ignored; anything that is not x.y.z
+# compares as 0.0.0. Pure shell (macOS `sort` has no stable -V).
+_acp_semver_gt() {
+  _sg_a="$(printf '%s' "$1" | sed -n 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')"
+  _sg_b="$(printf '%s' "$2" | sed -n 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')"
+  set -- ${_sg_a:-0 0 0} ${_sg_b:-0 0 0}
+  [ "$1" -gt "$4" ] && return 0; [ "$1" -lt "$4" ] && return 1
+  [ "$2" -gt "$5" ] && return 0; [ "$2" -lt "$5" ] && return 1
+  [ "$3" -gt "$6" ]
 }
 
 # One-line warning when a pinned download was REJECTED (not merely offline).
@@ -1027,7 +1039,13 @@ if [ "$GOVERN_PINNED_OK" = true ]; then
 else
   rm -f "$GOVERN_FETCHED"
   GOVERN_SOURCE="bundled fallback"
-  cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
+  # The bundled copy is written to a sibling file first and only promoted
+  # when it is NOT a downgrade. A failed fetch on a machine that already
+  # has a newer govern.mjs must keep that file: on 2026-11-02 a real
+  # customer's 0.28.0 was silently overwritten by this fallback and every
+  # tool call ran the older hook. Never brick, never silently.
+  GOVERN_BUNDLED="$CONFIG_DIR/govern.mjs.bundled"
+  cat > "$GOVERN_BUNDLED" << 'GOVERN'
 #!/usr/bin/env node
 import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { homedir } from "os";
@@ -1357,8 +1375,20 @@ const hookEvent = typeof input.hook_event_name === "string" ? input.hook_event_n
 if (hookEvent === "PostToolUse") handlePostToolUse();
 else handlePreToolUse();
 GOVERN
+  GOVERN_BUNDLED_VERSION="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$GOVERN_BUNDLED" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
+  if [ -s "$CONFIG_DIR/govern.mjs" ] && _acp_semver_gt "$GOVERN_OLD_VERSION" "$GOVERN_BUNDLED_VERSION" \
+     && { [ "$LOCAL_MODE" != true ] || grep -q "runLocal" "$CONFIG_DIR/govern.mjs"; }; then
+    rm -f "$GOVERN_BUNDLED"
+    GOVERN_SOURCE="existing copy kept"
+    echo "  ${C_DIM}[ACP] kept existing govern.mjs $GOVERN_OLD_VERSION (fetch failed; bundled fallback is older, $GOVERN_BUNDLED_VERSION)${C_RESET}" >&2
+  elif mv -f "$GOVERN_BUNDLED" "$CONFIG_DIR/govern.mjs"; then
+    :
+  else
+    rm -f "$GOVERN_BUNDLED"
+    echo "  ${C_RED}[ACP] WARNING:${C_RESET} could not write the bundled govern.mjs into place — leaving whatever is already there." >&2
+  fi
 fi
-chmod +x "$CONFIG_DIR/govern.mjs"
+chmod +x "$CONFIG_DIR/govern.mjs" 2>/dev/null || true
 echo "  ${C_GREEN}✓${C_RESET} [ACP] Governance hook installed ($GOVERN_SOURCE)"
 GOVERN_NEW_VERSION="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$CONFIG_DIR/govern.mjs" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
 if [ "$UPDATE_MODE" = true ]; then
@@ -2537,8 +2567,11 @@ if [ "$HAS_CLAUDE" = true ]; then
     fi
   fi
   if [ "$SETTINGS_HAS_HOOK" = true ] && [ "$PLUGIN_INSTALLED" = true ]; then
-    MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/agentic-control-plane/hooks/hooks.json"
-    MARKET_BIN="$HOME/.claude/plugins/marketplaces/agentic-control-plane/bin/govern.mjs"
+    # The marketplace is registered as `acp`, so its clone lives under
+    # marketplaces/acp (not the plugin's name — that path never existed and
+    # the version always read "unknown").
+    MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/acp/hooks/hooks.json"
+    MARKET_BIN="$HOME/.claude/plugins/marketplaces/acp/bin/govern.mjs"
     MARKET_VER="unknown"
     if [ -f "$MARKET_BIN" ]; then
       MARKET_VER="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$MARKET_BIN" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
