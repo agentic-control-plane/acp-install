@@ -18,6 +18,18 @@ set -e
 #       files each one touches, before writing anything at all. Enter
 #       takes everything found; `n` writes nothing and exits.
 #
+#   1c. Safety floor: force-push, destructive SQL handed to a database
+#       client, curl|sh and recursive deletes outside your project wait
+#       for a person, in every harness above. ON for everyone. With a
+#       terminal you are asked "Keep the safety floor on? (Y/n)"; `n`
+#       turns it off (back on any time from the console's Policies page).
+#       Turning the floor off always needs a typed answer: with no
+#       terminal (curl|bash in CI, an agent re-running this) it stays on,
+#       and ACP_FLOOR=off only changes the question to "Turn the safety
+#       floor off for this workspace? (y/N)", read from the terminal.
+#       --all/--only skip the Y/n question. --local prints the floor line
+#       and asks nothing. Only a typed answer is reported (step 7).
+#
 #   2. Write ~/.acp/govern.mjs (the hook dispatcher script — shared across clients)
 #
 #   3. Register PreToolUse + PostToolUse hooks in each detected client's config:
@@ -39,7 +51,8 @@ set -e
 #
 #   7. Tell ACP whether the install finished: one POST to
 #      $API_BASE/install/report with the outcome, the step that failed,
-#      OS/arch, which clients were chosen, and the exit code — tied to
+#      OS/arch, which clients were chosen, the safety floor answer if you
+#      typed one (step 1c; `floor` is absent otherwise), and the exit code — tied to
 #      your workspace if a key is already on this machine. No paths, no
 #      file contents, no command output. Skipped in --local mode; opt
 #      out with ACP_NO_REPORT=1.
@@ -100,23 +113,31 @@ for _a in "$@"; do case "$_a" in --update) UPDATE_MODE=true ;; esac; done
 # it died in, and prints where to get help. Best-effort by construction:
 # 5s cap, stdin closed, every error swallowed — it can never change the
 # exit code or block the install.
-ACP_INSTALLER_REV="2026-10-22"
+ACP_INSTALLER_REV="2026-11-07"
 ACP_STEP="start"
 ACP_OUTCOME=""  # set before an intentional non-zero exit that is not a failure
 _ACP_FAIL_AT=""
 _ACP_REPORTED=false
+# Safety floor answer (step 1c). The env value is only a request, read once
+# here; ACP_FLOOR itself is set to on|off by the floor step only when a
+# person typed an answer, and stays empty otherwise (no tty, --all/--only,
+# --update), so the beacon then omits the field: the gateway treats absent
+# as "no change" and keeps the first answer it recorded.
+_ACP_FLOOR_ENV="${ACP_FLOOR:-}"
+ACP_FLOOR=""
 _acp_report() {  # $1 = failed|completed, $2 = exit code; echoes "sent" on success
   [ "$LOCAL_MODE" = true ] && return 0
   [ "${ACP_NO_REPORT:-}" = "1" ] && return 0
   command -v curl >/dev/null 2>&1 || return 0
   _ACP_REPORTED=true
-  local harnesses key auth=""
+  local harnesses key auth="" floor_field=""
+  case "$ACP_FLOOR" in on|off) floor_field=",\"floor\":\"$ACP_FLOOR\"" ;; esac
   harnesses="$(printf '%s' "${TARGETS:-}" | tr 'A-Z' 'a-z' | sed 's/ + /,/g; s/ /-/g')"
   key="$(head -n 1 "$CREDS_FILE" 2>/dev/null | tr -d '[:space:]')"
   case "$key" in gsk_*) auth="Authorization: Bearer $key" ;; esac
   if curl -s -m 5 -o /dev/null -X POST "$API_BASE/install/report" \
       -H "Content-Type: application/json" ${auth:+-H "$auth"} \
-      -d "{\"outcome\":\"$1\",\"exit_code\":$2,\"step\":\"$ACP_STEP\",\"installer\":\"sh\",\"version\":\"$ACP_INSTALLER_REV\",\"os\":\"$(uname -s | tr 'A-Z' 'a-z')\",\"arch\":\"$(uname -m)\",\"harnesses\":\"$harnesses\",\"env\":\"${CI:+ci}\",\"detail\":\"$_ACP_FAIL_AT\"}" \
+      -d "{\"outcome\":\"$1\",\"exit_code\":$2,\"step\":\"$ACP_STEP\",\"installer\":\"sh\",\"version\":\"$ACP_INSTALLER_REV\",\"os\":\"$(uname -s | tr 'A-Z' 'a-z')\",\"arch\":\"$(uname -m)\",\"harnesses\":\"$harnesses\",\"env\":\"${CI:+ci}\",\"detail\":\"$_ACP_FAIL_AT\"$floor_field}" \
       </dev/null >/dev/null 2>&1; then
     echo sent
   fi
@@ -172,9 +193,9 @@ fi
 # and paste the digest. Hook fixes now reach machines with the installer
 # release (or `acp-update`, which re-runs this installer), not on every push.
 ACP_PIN_GOVERN_REPO="claude-code-acp-plugin"
-# Plugin 0.28.0 (main cb043a8e).
-ACP_PIN_GOVERN_REF="cb043a8e81f0d8382dba9e45a4e9ed7ec4c8606c"
-ACP_PIN_GOVERN_SHA="1ff4fd77ba62a23a24c81b7dcbd2c6c2c1a71393ff5df2b954c2028b969867a8"
+# Plugin 0.29.6 (main 09d0e01c).
+ACP_PIN_GOVERN_REF="09d0e01c3cfe1b7a5c9846f5bb695dbdbd5d8b25"
+ACP_PIN_GOVERN_SHA="e654de2ac473e893cf5803c10c8606affa0f324e149762d7027d5a011ebaaa63"
 ACP_PIN_PI_REF="e27c427621c6a6c4948e95ca87cfd2c97c27c20d"
 ACP_PIN_PI_INDEX_SHA="cf8c50c0ed57c596f965be1a3f8a958d9a8b9b0dc9f8e1377e4286ca39e127c1"
 ACP_PIN_PRIME_REF="4043829b9acdaa2d258ca5237166fcc7910bfd14"
@@ -219,6 +240,53 @@ _acp_fetch_pinned() {
   mv -f "$_pf_tmp" "$_pf_dest" || { rm -f "$_pf_tmp"; ACP_PIN_FAIL="download"; return 1; }
   ACP_PIN_FAIL=""
   return 0
+}
+
+# Active version of the ACP plugin from Claude Code's own registry
+# (~/.claude/plugins/installed_plugins.json; v1 object or v2 array shape).
+# Empty when not installed or unreadable. `claude plugin list` prints the
+# same thing, but its output format is not a contract (acp-install#64).
+_acp_claude_plugin_active_version() {
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const p = path.join(process.argv[1], ".claude", "plugins", "installed_plugins.json");
+    let j; try { j = JSON.parse(fs.readFileSync(p, "utf8")); } catch { process.exit(0); }
+    const e = j && j.plugins && j.plugins["agentic-control-plane@acp"];
+    const v = Array.isArray(e) ? (e.find((x) => x && x.scope === "user") || e[0] || {}).version : e && e.version;
+    if (typeof v === "string" && /^\d+\.\d+\.\d+/.test(v)) process.stdout.write(v.trim());
+  ' "$HOME" 2>/dev/null
+}
+
+# Version the LOCAL marketplace clone's manifest says is current — what
+# `claude plugin marketplace update acp` just fetched. Empty when the clone
+# is missing or unreadable.
+_acp_claude_marketplace_version() {
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const pd = path.join(process.argv[1], ".claude", "plugins");
+    let loc = path.join(pd, "marketplaces", "acp");
+    try {
+      const k = JSON.parse(fs.readFileSync(path.join(pd, "known_marketplaces.json"), "utf8"));
+      if (k && k.acp && typeof k.acp.installLocation === "string" && k.acp.installLocation.trim()) loc = k.acp.installLocation.trim();
+    } catch {}
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(loc, ".claude-plugin", "marketplace.json"), "utf8"));
+      const e = (Array.isArray(m.plugins) ? m.plugins : []).find((x) => x && x.name === "agentic-control-plane");
+      if (e && typeof e.version === "string" && /^\d+\.\d+\.\d+/.test(e.version)) process.stdout.write(e.version.trim());
+    } catch {}
+  ' "$HOME" 2>/dev/null
+}
+
+# _acp_semver_gt A B — 0 when A is a strictly newer x.y.z than B. Non-numeric
+# suffixes ("-fallback", "-rc1") are ignored; anything that is not x.y.z
+# compares as 0.0.0. Pure shell (macOS `sort` has no stable -V).
+_acp_semver_gt() {
+  _sg_a="$(printf '%s' "$1" | sed -n 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')"
+  _sg_b="$(printf '%s' "$2" | sed -n 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')"
+  set -- ${_sg_a:-0 0 0} ${_sg_b:-0 0 0}
+  [ "$1" -gt "$4" ] && return 0; [ "$1" -lt "$4" ] && return 1
+  [ "$2" -gt "$5" ] && return 0; [ "$2" -lt "$5" ] && return 1
+  [ "$3" -gt "$6" ]
 }
 
 # One-line warning when a pinned download was REJECTED (not merely offline).
@@ -519,6 +587,47 @@ if [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = false ]; then
     echo "  Re-run and pick by number, or: --only=claude-code"
     echo ""
     exit 0
+  fi
+
+  # ── Step 1c: safety floor (gsc#1865) ───────────────────────────────
+  # On for everyone. Turning it off takes a person at a real terminal, the
+  # same way "Reconfigure?" below does: no /dev/tty (curl|bash in CI, an
+  # agent re-running this) means on, and ACP_FLOOR=off is honoured only when
+  # a terminal is present too. --all/--only skip the question; floor on.
+  # Opening /dev/tty (not just -r) is the real test: the node is readable
+  # even when there is no controlling terminal to open.
+  # ACP_FLOOR is set ONLY when a person typed an answer (Enter on the Y/n
+  # question counts as "on"). Every other path leaves it empty, so the beacon
+  # carries no `floor` field and the workspace records no choice nobody made.
+  # A terminal proves a terminal, not a person (an agent inside tmux has
+  # one), so even ACP_FLOOR=off waits for a typed "y" before it counts.
+  ACP_FLOOR=""
+  echo ""
+  if [ "$LOCAL_MODE" = true ]; then
+    echo "  Safety floor: rm -rf /, mkfs and fork bombs are always refused; force-push, destructive SQL, curl|sh and deletes outside the working directory ask first, in every harness above. (on)"
+  else
+    echo "  Safety floor: on. Force-push, destructive SQL and curl|sh wait for a person in every harness above. Your Policies page shows whether it is live for this workspace yet."
+    if ( : </dev/tty ) 2>/dev/null; then
+      _floor_reply=""
+      if [ "$_ACP_FLOOR_ENV" = off ]; then
+        printf "  Turn the safety floor off for this workspace? (y/N) "
+        if read -r _floor_reply </dev/tty 2>/dev/null; then
+          _floor_reply="$(printf '%s' "$_floor_reply" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
+          case "$_floor_reply" in y|yes) ACP_FLOOR=off ;; *) ACP_FLOOR=on ;; esac
+        fi
+      elif [ -z "$ACP_ONLY" ]; then
+        printf "  Keep the safety floor on? (Y/n) "
+        if read -r _floor_reply </dev/tty 2>/dev/null; then
+          _floor_reply="$(printf '%s' "$_floor_reply" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
+          case "$_floor_reply" in n|no) ACP_FLOOR=off ;; *) ACP_FLOOR=on ;; esac
+        fi
+      fi
+    elif [ "$_ACP_FLOOR_ENV" = off ]; then
+      echo "  ${C_DIM}ACP_FLOOR=off ignored: turning the floor off needs a terminal. It stays on.${C_RESET}"
+    fi
+    if [ "$ACP_FLOOR" = off ]; then
+      echo "  Safety floor off for this workspace. Turn it back on any time from the console's Policies page."
+    fi
   fi
 
   # The gate reaches every install block below through these flags alone —
@@ -992,7 +1101,13 @@ if [ "$GOVERN_PINNED_OK" = true ]; then
 else
   rm -f "$GOVERN_FETCHED"
   GOVERN_SOURCE="bundled fallback"
-  cat > "$CONFIG_DIR/govern.mjs" << 'GOVERN'
+  # The bundled copy is written to a sibling file first and only promoted
+  # when it is NOT a downgrade. A failed fetch on a machine that already
+  # has a newer govern.mjs must keep that file: on 2026-11-02 a real
+  # customer's 0.28.0 was silently overwritten by this fallback and every
+  # tool call ran the older hook. Never brick, never silently.
+  GOVERN_BUNDLED="$CONFIG_DIR/govern.mjs.bundled"
+  cat > "$GOVERN_BUNDLED" << 'GOVERN'
 #!/usr/bin/env node
 import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { homedir } from "os";
@@ -1322,8 +1437,20 @@ const hookEvent = typeof input.hook_event_name === "string" ? input.hook_event_n
 if (hookEvent === "PostToolUse") handlePostToolUse();
 else handlePreToolUse();
 GOVERN
+  GOVERN_BUNDLED_VERSION="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$GOVERN_BUNDLED" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
+  if [ -s "$CONFIG_DIR/govern.mjs" ] && _acp_semver_gt "$GOVERN_OLD_VERSION" "$GOVERN_BUNDLED_VERSION" \
+     && { [ "$LOCAL_MODE" != true ] || grep -q "runLocal" "$CONFIG_DIR/govern.mjs"; }; then
+    rm -f "$GOVERN_BUNDLED"
+    GOVERN_SOURCE="existing copy kept"
+    echo "  ${C_DIM}[ACP] kept existing govern.mjs $GOVERN_OLD_VERSION (fetch failed; bundled fallback is older, $GOVERN_BUNDLED_VERSION)${C_RESET}" >&2
+  elif mv -f "$GOVERN_BUNDLED" "$CONFIG_DIR/govern.mjs"; then
+    :
+  else
+    rm -f "$GOVERN_BUNDLED"
+    echo "  ${C_RED}[ACP] WARNING:${C_RESET} could not write the bundled govern.mjs into place — leaving whatever is already there." >&2
+  fi
 fi
-chmod +x "$CONFIG_DIR/govern.mjs"
+chmod +x "$CONFIG_DIR/govern.mjs" 2>/dev/null || true
 echo "  ${C_GREEN}✓${C_RESET} [ACP] Governance hook installed ($GOVERN_SOURCE)"
 GOVERN_NEW_VERSION="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$CONFIG_DIR/govern.mjs" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
 if [ "$UPDATE_MODE" = true ]; then
@@ -2311,15 +2438,44 @@ if [ "$HAS_CLAUDE" = true ]; then
 
   # ── Preferred path (#295): install the PLUGIN. It carries the hooks,
   #    the /cost-xray + /acp skills, AND the bundled ACP MCP server, with
-  #    marketplace version tracking — users actually receive updates.
-  #    Falls back to direct hook wiring on older Claude Code CLIs.
+  #    marketplace version tracking. Falls back to direct hook wiring on
+  #    older Claude Code CLIs.
+  #
+  #    acp-install#64: `claude plugin install` is a NO-OP on a plugin that is
+  #    already installed — it never switches the active version, even after
+  #    `marketplace update` has put a newer release in the cache (a machine
+  #    sat on 0.27.0 with 0.29.5 downloaded, every installer run "succeeded").
+  #    Only `claude plugin update` switches it. So: update when present,
+  #    install when absent, then read the ACTIVE version back from Claude
+  #    Code's own registry and compare it with the marketplace manifest —
+  #    and print what actually happened, not a hope.
   CLAUDE_PLUGIN_OK=false
-  if claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin >/dev/null 2>&1 \
-     || claude plugin marketplace update acp >/dev/null 2>&1; then
-    claude plugin install agentic-control-plane@acp >/dev/null 2>&1 || true
-    if claude plugin list 2>/dev/null | grep -q "agentic-control-plane"; then
-      CLAUDE_PLUGIN_OK=true
+  CLAUDE_PLUGIN_MARKET_OK=false
+  CLAUDE_PLUGIN_BEFORE="$(_acp_claude_plugin_active_version)"
+  if [ -n "$(_acp_claude_marketplace_version)" ]; then
+    # Marketplace already registered: refresh its clone (add would be a no-op).
+    if claude plugin marketplace update acp >/dev/null 2>&1 \
+       || claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin >/dev/null 2>&1; then
+      CLAUDE_PLUGIN_MARKET_OK=true
     fi
+  elif claude plugin marketplace add agentic-control-plane/claude-code-acp-plugin >/dev/null 2>&1 \
+       || claude plugin marketplace update acp >/dev/null 2>&1; then
+    CLAUDE_PLUGIN_MARKET_OK=true
+  fi
+  if [ "$CLAUDE_PLUGIN_MARKET_OK" = true ]; then
+    if [ -n "$CLAUDE_PLUGIN_BEFORE" ]; then
+      # `plugin update` is missing on older CLIs; the install fallback keeps
+      # the plugin present and the version check below says what it means.
+      claude plugin update agentic-control-plane@acp >/dev/null 2>&1 \
+        || claude plugin install agentic-control-plane@acp >/dev/null 2>&1 || true
+    else
+      claude plugin install agentic-control-plane@acp >/dev/null 2>&1 || true
+    fi
+  fi
+  CLAUDE_PLUGIN_AFTER="$(_acp_claude_plugin_active_version)"
+  CLAUDE_PLUGIN_MARKET_VER="$(_acp_claude_marketplace_version)"
+  if [ -n "$CLAUDE_PLUGIN_AFTER" ] || claude plugin list 2>/dev/null | grep -q "agentic-control-plane"; then
+    CLAUDE_PLUGIN_OK=true
   fi
 
   CLAUDE_SETTINGS="$HOME/.claude/settings.json"
@@ -2358,7 +2514,29 @@ if [ "$HAS_CLAUDE" = true ]; then
         if (c.mcpServers && c.mcpServers.acp) { delete c.mcpServers.acp; fs.writeFileSync(p, JSON.stringify(c, null, 2)); }
       " "$CLAUDE_JSON"
     fi
-    echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin installed (hooks + skills + MCP, auto-updating)"
+    # Say what happened, with the versions read back — never "auto-updating":
+    # Claude Code does not auto-update a third-party marketplace plugin, and
+    # this installer only just learned to (acp-install#64).
+    if [ -n "$CLAUDE_PLUGIN_BEFORE" ] && [ -n "$CLAUDE_PLUGIN_AFTER" ] && [ "$CLAUDE_PLUGIN_BEFORE" != "$CLAUDE_PLUGIN_AFTER" ]; then
+      echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin updated v$CLAUDE_PLUGIN_BEFORE → v$CLAUDE_PLUGIN_AFTER (hooks + skills + MCP) — restart Claude Code to run it"
+    elif [ -n "$CLAUDE_PLUGIN_BEFORE" ]; then
+      echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin v$CLAUDE_PLUGIN_BEFORE (hooks + skills + MCP)"
+    else
+      echo "  ${C_GREEN}✓${C_RESET} [Claude Code] ACP plugin installed v${CLAUDE_PLUGIN_AFTER:-?} (hooks + skills + MCP)"
+    fi
+    if [ -n "$CLAUDE_PLUGIN_MARKET_VER" ] && [ -n "$CLAUDE_PLUGIN_AFTER" ] && [ "$CLAUDE_PLUGIN_MARKET_VER" != "$CLAUDE_PLUGIN_AFTER" ]; then
+      echo ""
+      echo "  ${C_RED}! [Claude Code] the ACTIVE ACP plugin is v$CLAUDE_PLUGIN_AFTER but the marketplace has v$CLAUDE_PLUGIN_MARKET_VER.${C_RESET}"
+      echo "    This installer could not switch it (your Claude Code may predate \`claude plugin update\`)."
+      echo "    Run exactly:"
+      echo "      ${C_RED}claude plugin update agentic-control-plane@acp${C_RESET}"
+      echo "    then restart Claude Code. Until then every session runs v$CLAUDE_PLUGIN_AFTER."
+      echo ""
+    elif [ "$CLAUDE_PLUGIN_MARKET_OK" != true ]; then
+      echo "    (the plugin marketplace was unreachable — the plugin stays at v${CLAUDE_PLUGIN_AFTER:-?}; re-run this installer online to pick up updates)"
+    elif [ -z "$CLAUDE_PLUGIN_MARKET_VER" ] || [ -z "$CLAUDE_PLUGIN_AFTER" ]; then
+      echo "    (could not read the plugin registry to verify the version — check with: claude plugin list)"
+    fi
   else
     # Fallback for Claude Code CLIs without plugin-marketplace support:
     # direct hook wiring + user-scope MCP, exactly as before.
@@ -2451,8 +2629,11 @@ if [ "$HAS_CLAUDE" = true ]; then
     fi
   fi
   if [ "$SETTINGS_HAS_HOOK" = true ] && [ "$PLUGIN_INSTALLED" = true ]; then
-    MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/agentic-control-plane/hooks/hooks.json"
-    MARKET_BIN="$HOME/.claude/plugins/marketplaces/agentic-control-plane/bin/govern.mjs"
+    # The marketplace is registered as `acp`, so its clone lives under
+    # marketplaces/acp (not the plugin's name — that path never existed and
+    # the version always read "unknown").
+    MARKET_HOOKS="$HOME/.claude/plugins/marketplaces/acp/hooks/hooks.json"
+    MARKET_BIN="$HOME/.claude/plugins/marketplaces/acp/bin/govern.mjs"
     MARKET_VER="unknown"
     if [ -f "$MARKET_BIN" ]; then
       MARKET_VER="$(grep -o 'PLUGIN_VERSION = "[^"]*"' "$MARKET_BIN" 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')"
@@ -2466,7 +2647,7 @@ if [ "$HAS_CLAUDE" = true ]; then
     echo "    if the plugin copy is stale, runs code you are not tracking."
     echo "    Pick ONE — we don't edit hook config for you:"
     echo "      keep the installer's (simplest):  claude plugin uninstall agentic-control-plane"
-    echo "      or keep the plugin's:             claude plugin update agentic-control-plane"
+    echo "      or keep the plugin's:             claude plugin update agentic-control-plane@acp"
     echo "                                        then remove the govern.mjs hook from $CLAUDE_SETTINGS"
     echo ""
   fi
@@ -3278,6 +3459,12 @@ if [ -f "$CREDS_FILE" ]; then
     echo "  You're all set. View your audit logs:"
     echo "  $DASHBOARD_BASE/activity"
     echo ""
+    # Hooks were rewritten with the existing key, so this is a finished
+    # install; report it so a typed floor answer (step 1c) reaches the
+    # workspace (no answer typed = no `floor` field). step=rerun keeps these out of the first-install funnel (install_completed
+    # with step=done is the number the funnel counts).
+    ACP_STEP="rerun"
+    _acp_report completed 0 >/dev/null
     exit 0
   fi
 fi
