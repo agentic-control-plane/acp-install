@@ -21,7 +21,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function extractGovern() {
   const sh = readFileSync(join(ROOT, "install.sh"), "utf8");
-  const m = sh.match(/cat > "\$CONFIG_DIR\/govern\.mjs" << 'GOVERN'\n([\s\S]*?)\nGOVERN\n/);
+  // The installer writes the bundled hook to a sibling file ($GOVERN_BUNDLED)
+  // and promotes it to govern.mjs only when it is not a downgrade; accept
+  // either heredoc target so the extracted bytes are still what users get.
+  const m = sh.match(/cat > "\$(?:CONFIG_DIR\/govern\.mjs|GOVERN_BUNDLED)" << 'GOVERN'\n([\s\S]*?)\nGOVERN\n/);
   assert.ok(m, "could not find the embedded govern.mjs heredoc in install.sh");
   return m[1] + "\n";
 }
