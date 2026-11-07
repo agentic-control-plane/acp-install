@@ -19,7 +19,9 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function extractGovern() {
   const sh = readFileSync(join(ROOT, "install.sh"), "utf8");
-  const m = sh.match(/cat > "\$CONFIG_DIR\/govern\.mjs" << 'GOVERN'\n([\s\S]*?)\nGOVERN\n/);
+  // The bundled fallback hook is written to $GOVERN_BUNDLED since the downgrade
+  // guard (2026-11-07); older installers wrote it straight to govern.mjs.
+  const m = sh.match(/cat > "\$(?:GOVERN_BUNDLED|CONFIG_DIR\/govern\.mjs)" << 'GOVERN'\n([\s\S]*?)\nGOVERN\n/);
   assert.ok(m, "could not find the embedded govern.mjs heredoc in install.sh");
   return m[1] + "\n";
 }
