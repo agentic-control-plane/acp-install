@@ -418,7 +418,7 @@ _offer() { # slug detected Label files note
 
 _offer claude-code "$HAS_CLAUDE" "Claude Code" \
   "~/.claude/settings.json · ~/.claude/CLAUDE.md" \
-  "Approval prompts appear inline in your session. Adds a claude-acp launcher that prices model calls."
+  "Safety-floor holds appear inline in your session; holds from your own rules are approved from the console or email. Adds a claude-acp launcher that prices model calls."
 _offer cursor "$HAS_CURSOR" "Cursor" \
   "~/.cursor/hooks.json · ~/.cursor/mcp.json" \
   "Covers tool calls made by Cursor's agent, not your own editing."
@@ -545,9 +545,13 @@ if [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = false ]; then
   echo "  For each one you pick, ACP adds a hook that runs before and after"
   echo "  every tool call your agent makes. The hook records the call — tool"
   echo "  name, a truncated preview of the arguments and the result, and the"
-  echo "  decision — to your workspace, and can ask or block according to your"
-  echo "  policy. Nothing is blocked until you write a policy. Your agents keep"
-  echo "  working if ACP is unreachable."
+  echo "  decision — to your workspace. The safety floor applies from the first"
+  echo "  call: rm -rf on your home or system folders and disk wipes are always"
+  echo "  blocked; force-push, destructive SQL, piping a download into a shell,"
+  echo "  and deleting outside your project are held for your approval. Your own rules apply"
+  echo "  once you run /acp-enforce in your agent (with --local they apply from"
+  echo "  the first call). Interactive sessions keep working if ACP is unreachable;"
+  echo "  unattended runs wait for it."
   echo ""
   echo "  ${C_DIM}Shared, once: ~/.acp/ plus one marked line adding ~/.acp/bin to PATH"
   echo "  in your shell rc. We append inside acp:begin/acp:end markers and never"
@@ -606,7 +610,7 @@ if [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = false ]; then
   if [ "$LOCAL_MODE" = true ]; then
     echo "  Safety floor: rm -rf /, mkfs and fork bombs are always refused; force-push, destructive SQL, curl|sh and deletes outside the working directory ask first, in every harness above. (on)"
   else
-    echo "  Safety floor: on. Force-push, destructive SQL and curl|sh wait for a person in every harness above. Your Policies page shows whether it is live for this workspace yet."
+    echo "  Safety floor: on. Force-push, destructive SQL and curl|sh wait for a person in every harness above."
     if ( : </dev/tty ) 2>/dev/null; then
       _floor_reply=""
       if [ "$_ACP_FLOOR_ENV" = off ]; then
@@ -951,7 +955,7 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
     _acp_pin_warn "an Antigravity hook file" "Hook not registered."
   fi
   if [ "$AGY_HOOK_OK" = true ]; then
-    echo "  ${C_GREEN}✓ Antigravity governed${C_RESET} — registration merged into the shared hooks.json (CLI, IDE, and app); ACP asks render as native force_ask prompt cards; active from the next session."
+    echo "  ${C_GREEN}✓ Antigravity governed${C_RESET} — registration merged into the shared hooks.json (CLI, IDE, and app); held calls are approved from the console or email; active from the next session."
     INSTALLED="${INSTALLED:+$INSTALLED, }Antigravity"
   else
     echo "  Couldn't finish automatically (node/curl refused or a directory wasn't writable). Run:"
@@ -3378,7 +3382,7 @@ if [ "$LOCAL_MODE" = true ]; then
   if [ ! -f "$CONFIG_DIR/policy.json" ]; then
     cat > "$CONFIG_DIR/policy.json" << 'POLICY'
 {
-  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor (rm -rf /, mkfs, dd of a disk, fork bombs) always denies regardless of this file, and a force-push to main always asks first. 'default' applies when no rule matches. 'contextGuard' sizes whole-file reads (Read, cat, head, tail, less, more) before they happen: mode shadow only records what a read over maxLines would have put into context (see ~/.acp/audit.jsonl → contextGuard.estTokens); set mode to enforce to block them with a steer toward offset/limit, grep, or a subagent.",
+  "_comment": "Local ACP policy — edit freely. decide.mjs walks keys most-specific → least (e.g. Bash.curl.api.github.com → Bash.curl → Bash). Values: allow | ask | deny. The safety floor applies regardless of this file: rm -rf on your home or root, mkfs, dd onto a disk, and fork bombs are always denied; force-push, destructive SQL, piping a download into a shell, and a recursive delete outside the working directory are always held for your approval (a deny here can tighten that, nothing can loosen it). 'default' applies when no rule matches. 'contextGuard' sizes whole-file reads (Read, cat, head, tail, less, more) before they happen: mode shadow only records what a read over maxLines would have put into context (see ~/.acp/audit.jsonl → contextGuard.estTokens); set mode to enforce to block them with a steer toward offset/limit, grep, or a subagent.",
   "default": "allow",
   "rules": {
     "Bash.rm": "ask",
@@ -3404,8 +3408,10 @@ POLICY
   echo "  Every call is logged to ${C_DIM}~/.acp/audit.jsonl${C_RESET}:"
   echo "    ${C_DIM}tail -f ~/.acp/audit.jsonl${C_RESET}"
   echo ""
-  echo "  The safety floor always blocks the catastrophic (rm -rf /, mkfs, dd, fork bombs)"
-  echo "  and always asks before a force-push to main, regardless of policy."
+  echo "  Your rules apply from the first call; there is no mode switch in local mode."
+  echo "  The safety floor applies regardless: rm -rf on your home or root, disk wipes,"
+  echo "  and fork bombs are always blocked; force-push, destructive SQL, piping a download"
+  echo "  into a shell, and deleting outside your project are held for your approval."
   echo ""
   echo "  Restart your AI client to activate the hook."
   echo "  Want team control, cost X-ray, and a shared console across everyone's agents?"
