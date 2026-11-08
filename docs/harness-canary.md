@@ -56,6 +56,14 @@ Each matrix leg, on a fresh `ubuntu-latest` runner with Node 22 (and Python
    With no TTY, `--only` selects the harness non-interactively and the seeded
    key makes the installer's Step 2 (Authenticate) keep the existing key and
    exit 0: no device flow, no prompt (`ACP_RECONFIGURE` is left unset).
+   **claude-code only, before the installer (acp-install#64):** the leg
+   seeds an OLD plugin release as the ACTIVE one — marketplace added from
+   GitHub, its clone rewound to the 0.27.0 commit, `claude plugin install`
+   from that — so the installer's job is to *upgrade*. `claude plugin
+   install` is a no-op on an installed plugin, which is how every customer
+   stayed on the release they first installed while the installer reported
+   success; the invariants below assert the active version now equals the
+   marketplace manifest's and is not the seed.
 3. Asserts the install invariants (`scripts/canary-assert.mjs invariants`):
    the hook / plugin / provider is wired **exactly once**, the `<harness>-acp`
    launcher is executable, the agent directive (`acp:begin` ... `acp:end`) is

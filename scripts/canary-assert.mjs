@@ -94,6 +94,26 @@ function tryExec(cmd) {
   try { return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return ""; }
 }
 
+// Active version of agentic-control-plane@acp per Claude Code's own registry
+// (v1 object / v2 array shape), or null. Same read install.sh does.
+function claudePluginActiveVersion() {
+  const j = readJson(path.join(HOME, ".claude", "plugins", "installed_plugins.json"));
+  const e = j?.plugins?.["agentic-control-plane@acp"];
+  const v = Array.isArray(e) ? (e.find((x) => x && x.scope === "user") || e[0] || {}).version : e?.version;
+  return typeof v === "string" && /^\d+\.\d+\.\d+/.test(v) ? v.trim() : null;
+}
+
+// Version in the local marketplace clone's manifest, or null.
+function claudeMarketplaceVersion() {
+  const pd = path.join(HOME, ".claude", "plugins");
+  const known = readJson(path.join(pd, "known_marketplaces.json"));
+  const loc = typeof known?.acp?.installLocation === "string" && known.acp.installLocation.trim()
+    ? known.acp.installLocation.trim() : path.join(pd, "marketplaces", "acp");
+  const m = readJson(path.join(loc, ".claude-plugin", "marketplace.json"));
+  const e = (Array.isArray(m?.plugins) ? m.plugins : []).find((x) => x && x.name === "agentic-control-plane");
+  return typeof e?.version === "string" && /^\d+\.\d+\.\d+/.test(e.version) ? e.version.trim() : null;
+}
+
 function invariants() {
   check(fs.existsSync(path.join(HOME, ".acp", "govern.mjs")), "~/.acp/govern.mjs present");
   if (harness === "claude-code") {
@@ -109,6 +129,19 @@ function invariants() {
     const post = governEntries(s?.hooks, "PostToolUse").length;
     if (pluginListed) {
       check(pre === 0 && post === 0, `ACP plugin installed and settings.json has no direct govern hook (pre=${pre}, post=${post})`);
+      // acp-install#64: the installer must leave the ACTIVE plugin at the
+      // marketplace version. `claude plugin install` is a no-op on an
+      // installed plugin, so a machine that started on an old release stayed
+      // there while every installer run reported success. Active version =
+      // Claude Code's own registry; expected = the marketplace clone's
+      // manifest (what `marketplace update` just fetched).
+      const active = claudePluginActiveVersion();
+      const market = claudeMarketplaceVersion();
+      check(market !== null, `marketplace clone manifest readable (version ${market})`);
+      check(active !== null, `installed_plugins.json names the active ACP plugin version (${active})`);
+      check(active !== null && active === market, `active ACP plugin version equals the marketplace version (active=${active}, marketplace=${market})`);
+      const old = process.env.ACP_CANARY_OLD_PLUGIN_VERSION || "";
+      if (old) check(active !== old, `the pre-seeded old plugin ${old} was upgraded by the installer (now ${active})`);
     } else {
       check(pre === 1, `no plugin: settings.json PreToolUse has the govern hook exactly once (found ${pre})`);
       check(post === 1, `no plugin: settings.json PostToolUse has the govern hook exactly once (found ${post})`);
