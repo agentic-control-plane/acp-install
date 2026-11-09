@@ -21,7 +21,7 @@ Re-run without `--local` any time to connect.
 
 The installer detects whichever agents you run and sets up, for every agent it finds:
 
-- **Safety floor.** `rm -rf /`, `mkfs`, `dd` to a disk and fork bombs are always refused, including quoted and dot-segment spellings of those paths. Force-push, destructive SQL through a database CLI, `curl | sh` and deleting outside the working directory ask first. In a connected interactive install (without `--all` or `--only`) the installer asks "Keep the safety floor on? (Y/n)" and the default is on. Other installs leave it on without asking. An owner or admin can turn the ask tier off later on the Policies page. The always-refused list can't be changed.
+- **Safety floor.** `rm -rf /`, `mkfs`, `dd` to a disk and fork bombs are always refused. Force-push, destructive SQL through a database CLI, `curl | sh` and deleting outside the working directory ask first. In a connected interactive install (without `--all` or `--only`) the installer asks "Keep the safety floor on? (Y/n)" and the default is on. Other installs leave it on without asking. An owner or admin can turn the ask tier off later on the Policies page. The always-refused list can't be changed.
 - **Your rules, one place.** `allow` / `ask` / `deny` per tool, applied the same way to every agent. They live in the shared console (connected) or in `~/.acp/policy.json` (`--local`).
 - **A log of what happened.** The live activity feed in the console, or `tail -f ~/.acp/audit.jsonl` in `--local` mode.
 
@@ -48,7 +48,7 @@ For whichever AI clients it detects:
    - Claude Code: `claude-acp` routes model calls through the ACP proxy via `ANTHROPIC_BASE_URL` and a custom header. Plain `claude` is untouched.
    - Codex: `codex-acp` adds a `[model_providers.acp]` block to `~/.codex/config.toml` (it never changes the file's default `model_provider`) and launches with `codex -c model_provider=acp`. Plain `codex` is untouched.
 
-In `--local` mode, steps 4 to 6 and all other cloud wiring are skipped: no OAuth, no MCP server, no cost wrapper, no shell-rc edits. You get hooks and the on-device engine only. (Codex hooks match every local tool call: shell, `apply_patch`, MCP and other local tools. Only hosted tools such as web search bypass hooks.)
+In `--local` mode, steps 4 to 6 and all other cloud wiring are skipped: no OAuth, no MCP server, no cost wrapper, no shell-rc edits. You get hooks and the on-device engine only. (On current Codex builds the hooks see shell, `apply_patch`, MCP and other local tools; older builds pass only shell commands to hooks. Hosted tools such as web search never reach a hook.)
 
 The installer is idempotent. Running it again upgrades existing entries in place without duplicating them or touching hooks and policies you configured yourself.
 
