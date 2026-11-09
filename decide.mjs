@@ -141,8 +141,8 @@ function firstSubcommand(args) {
 // ── Compound-command classification ───────────────────────────────────
 // A compound command classifies by its MOST PRIVILEGED segment, and decide()
 // policy-checks EVERY segment (strictest verdict wins) — classifying by the
-// first segment let `true && gcloud …` run under Bash.true (#18). Rank
-// mirrors the gateway's fix for this class (gsc#516 / gsc#750): benign
+// first segment let `true && gcloud …` run under Bash.true. Rank
+// mirrors the gateway's fix for this class of bypass: benign
 // navigational bins lose to unknown bins, which lose to privileged bins.
 
 /** Benign / navigational binaries — never the interesting part of a
@@ -172,7 +172,7 @@ const PRIVILEGED_BINS = new Set([
  *  unknown 1, privileged 2. Ties resolve to the EARLIEST unit. */
 function privilegeRank(bin) {
   if (BENIGN_BINS.has(bin)) return 0;
-  if (PRIVILEGED_BINS.has(bin) || isShellBin(bin)) return 2;   // every shell, not only the listed ones (#1333)
+  if (PRIVILEGED_BINS.has(bin) || isShellBin(bin)) return 2;   // every shell, not only the listed ones
   return 1;
 }
 
@@ -187,7 +187,7 @@ function commandUnits(cmd, depth = 0) {
   for (const seg of splitSegments(cmd)) {
     const { bin, args } = parseCommand(seg);
     // A residue like `$` from `$(` is not a command word, and must not name
-    // the call Bash.$ — no rule can be written against it (#1335).
+    // the call Bash.$ — no rule can be written against it.
     if (!bin || !COMMAND_WORD_RE.test(bin)) continue;
     units.push({ bin, args, seg });
     const inner = innerShellCommand(bin, args);
@@ -284,13 +284,13 @@ function rmForceFloor(bin, args) {
   return null;
 }
 
-// Force-push is not on this floor (#1335, decided 2026-09-23): it is an ask
+// Force-push is not on this floor (decided 2026-09-23): it is an ask
 // on every surface, via FORCE_PUSH_RE in the destructive floor, so the same
 // push behaves the same locally and on the gateway.
 
 // Shells whose `-c <string>` argument is itself a command line: recurse the
 // floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
-// A shape, not a list (#1333): any short word ending in "sh" — ash, mksh and
+// A shape, not a list: any short word ending in "sh" — ash, mksh and
 // whatever comes next — except ssh, whose -c takes a cipher.
 function isShellBin(bin) {
   return bin !== "ssh" && /^[a-z]{0,3}sh$/.test(bin);
@@ -513,7 +513,7 @@ export function candidates(key) {
 }
 
 const VALID = new Set(["allow", "ask", "deny"]);
-// ── Destructive floor (ask-level; gatewaystack-connect#1097, plugin#29) ──
+// ── Destructive floor (ask-level) ──────────────────────────
 // One rung below the hardline floor: things a human always wants to be asked
 // about, in every mode — a force push, destructive SQL handed to a database
 // client, a remote download piped into a shell, a recursive delete outside
@@ -622,7 +622,7 @@ export function sqlPayloads(cmd) {
   return out.map((x) => x.trim()).filter(Boolean);
 }
 
-// `+main` forces as surely as `+main:main` (#1335).
+// `+main` forces as surely as `+main:main`.
 const FORCE_PUSH_RE = /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force(?!-with-lease|-if-includes)\b|\s-[a-eg-zA-Z]*f[a-zA-Z]*(?=\s|$)|\s\+[^\s:]+(?::|(?=\s|$)))/;
 const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*\/)?(?!ssh\b)[a-z]{0,3}sh\b/;
 const SHELL_OF_DOWNLOAD_RE = /\b(?!ssh\b)[a-z]{0,3}sh\s+(?:-[a-zA-Z]+\s+)*(?:-c\s+["']?\$\(\s*(?:curl|wget)\b|<\s*<?\s*\(\s*(?:curl|wget)\b)/;
@@ -734,7 +734,7 @@ export function decide(toolName, toolInput, policy, context) {
         return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key, contextGuard: shadow };
       })();
 
-  // Destructive floor (#1097): tightens an allow to ask in every mode. A
+  // Destructive floor: tightens an allow to ask in every mode. A
   // policy deny or ask already stands; a policy allow cannot loosen it.
   if (result.decision === "allow") {
     const destructive = destructiveFloor(toolName, toolInput, context);
