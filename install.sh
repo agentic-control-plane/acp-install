@@ -2294,6 +2294,61 @@ exec curl -sf https://agenticcontrolplane.com/install.sh | bash -s -- --update "
 ACPUPDATE
   chmod +x "$CONFIG_DIR/bin/acp-update"
 
+  # acp — terminal controls for held calls. `acp holds` lists your pending
+  # holds oldest first; `acp deny <code>` withdraws one. Deny only: a deny can
+  # only stop a call, so it needs no proof a person is present. Approving
+  # still needs a person (console, approval email, or Slack).
+  cat > "$CONFIG_DIR/bin/acp" << 'ACPCLI'
+#!/usr/bin/env node
+// acp: terminal controls for ACP holds. Deny only: approving a hold needs a
+// person (the console, the approval email, or Slack).
+//
+//   acp holds                       list your pending holds, oldest first
+//   acp deny ACP-97F4 [reason...]   withdraw a hold by code or approval id
+"use strict";
+const { readFileSync } = require("node:fs");
+const { homedir } = require("node:os");
+const { join } = require("node:path");
+
+const usage = "usage: acp holds | acp deny <ACP-XXXX|approval-id> [reason]";
+const [cmd, target, ...rest] = process.argv.slice(2);
+if (cmd !== "holds" && cmd !== "deny") { console.error(usage); process.exit(2); }
+
+let key = "";
+try { key = readFileSync(join(homedir(), ".acp", "credentials"), "utf8").trim(); } catch {}
+if (!key) { console.error("acp: no ~/.acp/credentials. Run the ACP installer first."); process.exit(1); }
+
+const base = (process.env.ACP_API_BASE || "https://api.agenticcontrolplane.com") + "/aarm/holds";
+const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+const age = (s) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`);
+
+async function call(url, init = {}) {
+  const r = await fetch(url, { ...init, headers, signal: AbortSignal.timeout(10000) });
+  let j = {};
+  try { j = await r.json(); } catch {}
+  if (!r.ok) { console.error(`acp: ${j.hint || j.error || `HTTP ${r.status}`}`); process.exit(1); }
+  return j;
+}
+
+(async () => {
+  if (cmd === "holds") {
+    const j = await call(base);
+    if (!j.holds || !j.holds.length) { console.log("No pending holds."); return; }
+    for (const x of j.holds) {
+      console.log(`${x.code}  ${age(x.age_seconds).padStart(4)}  ${String(x.tool).padEnd(10)} ${String(x.summary || "").slice(0, 80)}`);
+    }
+    console.log("Deny one: acp deny <code>. Approving needs a person: the console, the email, or Slack.");
+    return;
+  }
+  if (!target) { console.error(usage); process.exit(2); }
+  const body = /^[0-9a-f-]{36}$/i.test(target) ? { approval_id: target } : { code: target };
+  if (rest.length) body.reason = rest.join(" ");
+  const j = await call(`${base}/deny`, { method: "POST", body: JSON.stringify(body) });
+  console.log(`Denied ${j.code || target}. The held call will not run.`);
+})().catch((e) => { console.error(`acp: ${e.message}`); process.exit(1); });
+ACPCLI
+  chmod +x "$CONFIG_DIR/bin/acp"
+
   # acp-uninstall — the exit, shipped with the entrance. The script itself
   # is cached into ~/.acp so removal needs no network and no docs page:
   # getting out must never depend on us being reachable. The curl is only
