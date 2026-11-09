@@ -193,9 +193,9 @@ fi
 # and paste the digest. Hook fixes now reach machines with the installer
 # release (or `acp-update`, which re-runs this installer), not on every push.
 ACP_PIN_GOVERN_REPO="claude-code-acp-plugin"
-# Plugin 0.29.6 (main 09d0e01c).
-ACP_PIN_GOVERN_REF="09d0e01c3cfe1b7a5c9846f5bb695dbdbd5d8b25"
-ACP_PIN_GOVERN_SHA="e654de2ac473e893cf5803c10c8606affa0f324e149762d7027d5a011ebaaa63"
+# Plugin 0.30.1 (main 8f354ac5): honours ~/.acp/failmode; includes 0.30.0 headless holds.
+ACP_PIN_GOVERN_REF="8f354ac5345f9d2f48382491895efe566df97690"
+ACP_PIN_GOVERN_SHA="a896e8e24f337ac41d6fa1104aa29cb3e8d94ae001b72902ad2c87c78ce1a301"
 ACP_PIN_PI_REF="e27c427621c6a6c4948e95ca87cfd2c97c27c20d"
 ACP_PIN_PI_INDEX_SHA="cf8c50c0ed57c596f965be1a3f8a958d9a8b9b0dc9f8e1377e4286ca39e127c1"
 ACP_PIN_PRIME_REF="4043829b9acdaa2d258ca5237166fcc7910bfd14"
