@@ -80,7 +80,7 @@ set -e
 # claude...) then consumes the unread REST OF THE SCRIPT, and bash resumes
 # at a random offset: harness canary 2026-10-08 printed the tail of the Muse
 # fallback text and died with `syntax error near unexpected token fi` (exit 2)
-# right after Hermes installed (gsc#1394). A compound command is parsed in
+# right after Hermes installed. A compound command is parsed in
 # full before any of it runs, so by the time a child starts there is nothing
 # left on stdin to steal. A truncated download is now a syntax error with no
 # side effects, instead of a half-run install.
@@ -593,7 +593,7 @@ if [ "${#HARNESS_SLUG[@]}" -gt 0 ] && [ "$UPDATE_MODE" = false ]; then
     exit 0
   fi
 
-  # ── Step 1c: safety floor (gsc#1865) ───────────────────────────────
+  # ── Step 1c: safety floor ──────────────────────────────────────────
   # On for everyone. Turning it off takes a person at a real terminal, the
   # same way "Reconfigure?" below does: no /dev/tty (curl|bash in CI, an
   # agent re-running this) means on, and ACP_FLOOR=off is honoured only when
@@ -1130,7 +1130,7 @@ function readToken() {
   // Both credential paths, in the same order as the plugin's
   // bin/mcp-auth-headers.sh — these MUST stay in sync. When only proxy-key
   // exists, MCP authenticates (the install looks healthy) while a
-  // credentials-only hook reads nothing and no-ops (#596).
+  // credentials-only hook reads nothing and no-ops, so a missing credentials file must fail the check.
   for (const name of ["credentials", "proxy-key"]) {
     try {
       const value = readFileSync(join(homedir(), ".acp", name), "utf8").trim();
@@ -1159,7 +1159,7 @@ try {
   input = JSON.parse(raw);
 } catch { process.exit(0); }
 
-// Wired but uncredentialed: never brick — but NEVER silently (#592). The
+// Wired but uncredentialed: never brick — but NEVER silently: a silent no-op looks like governance. The
 // canonical bin/govern.mjs warns loudly here; this offline fallback must
 // match, or the no-network install path keeps the exact silent-ungoverned
 // hole the front-door fix closed. Banner once per session (marker-deduped);
@@ -1612,8 +1612,8 @@ function firstSubcommand(args) {
 // ── Compound-command classification ───────────────────────────────────
 // A compound command classifies by its MOST PRIVILEGED segment, and decide()
 // policy-checks EVERY segment (strictest verdict wins) — classifying by the
-// first segment let `true && gcloud …` run under Bash.true (#18). Rank
-// mirrors the gateway's fix for this class (gsc#516 / gsc#750): benign
+// first segment let `true && gcloud …` run under Bash.true. Rank
+// mirrors the gateway's fix for this class of bypass: benign
 // navigational bins lose to unknown bins, which lose to privileged bins.
 
 /** Benign / navigational binaries — never the interesting part of a
@@ -1643,7 +1643,7 @@ const PRIVILEGED_BINS = new Set([
  *  unknown 1, privileged 2. Ties resolve to the EARLIEST unit. */
 function privilegeRank(bin) {
   if (BENIGN_BINS.has(bin)) return 0;
-  if (PRIVILEGED_BINS.has(bin) || isShellBin(bin)) return 2;   // every shell, not only the listed ones (#1333)
+  if (PRIVILEGED_BINS.has(bin) || isShellBin(bin)) return 2;   // every shell, not only the listed ones
   return 1;
 }
 
@@ -1658,7 +1658,7 @@ function commandUnits(cmd, depth = 0) {
   for (const seg of splitSegments(cmd)) {
     const { bin, args } = parseCommand(seg);
     // A residue like `$` from `$(` is not a command word, and must not name
-    // the call Bash.$ — no rule can be written against it (#1335).
+    // the call Bash.$ — no rule can be written against it.
     if (!bin || !COMMAND_WORD_RE.test(bin)) continue;
     units.push({ bin, args, seg });
     const inner = innerShellCommand(bin, args);
@@ -1755,13 +1755,13 @@ function rmForceFloor(bin, args) {
   return null;
 }
 
-// Force-push is not on this floor (#1335, decided 2026-09-23): it is an ask
+// Force-push is not on this floor (decided 2026-09-23): it is an ask
 // on every surface, via FORCE_PUSH_RE in the destructive floor, so the same
 // push behaves the same locally and on the gateway.
 
 // Shells whose `-c <string>` argument is itself a command line: recurse the
 // floor into it so `bash -c "rm -rf ~"` can't launder past token inspection.
-// A shape, not a list (#1333): any short word ending in "sh" — ash, mksh and
+// A shape, not a list: any short word ending in "sh" — ash, mksh and
 // whatever comes next — except ssh, whose -c takes a cipher.
 function isShellBin(bin) {
   return bin !== "ssh" && /^[a-z]{0,3}sh$/.test(bin);
@@ -1984,7 +1984,7 @@ export function candidates(key) {
 }
 
 const VALID = new Set(["allow", "ask", "deny"]);
-// ── Destructive floor (ask-level; gatewaystack-connect#1097, plugin#29) ──
+// ── Destructive floor (ask-level) ──────────────────────────
 // One rung below the hardline floor: things a human always wants to be asked
 // about, in every mode — a force push, destructive SQL handed to a database
 // client, a remote download piped into a shell, a recursive delete outside
@@ -2093,7 +2093,7 @@ export function sqlPayloads(cmd) {
   return out.map((x) => x.trim()).filter(Boolean);
 }
 
-// `+main` forces as surely as `+main:main` (#1335).
+// `+main` forces as surely as `+main:main`.
 const FORCE_PUSH_RE = /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force(?!-with-lease|-if-includes)\b|\s-[a-eg-zA-Z]*f[a-zA-Z]*(?=\s|$)|\s\+[^\s:]+(?::|(?=\s|$)))/;
 const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*\/)?(?!ssh\b)[a-z]{0,3}sh\b/;
 const SHELL_OF_DOWNLOAD_RE = /\b(?!ssh\b)[a-z]{0,3}sh\s+(?:-[a-zA-Z]+\s+)*(?:-c\s+["']?\$\(\s*(?:curl|wget)\b|<\s*<?\s*\(\s*(?:curl|wget)\b)/;
@@ -2205,7 +2205,7 @@ export function decide(toolName, toolInput, policy, context) {
         return { decision: def, reason: `local policy: default → ${def}`, source: "default", classified: key, contextGuard: shadow };
       })();
 
-  // Destructive floor (#1097): tightens an allow to ask in every mode. A
+  // Destructive floor: tightens an allow to ask in every mode. A
   // policy deny or ask already stands; a policy allow cannot loosen it.
   if (result.decision === "allow") {
     const destructive = destructiveFloor(toolName, toolInput, context);
@@ -2495,7 +2495,7 @@ ACP_STEP="claude_code"
 if [ "$HAS_CLAUDE" = true ]; then
   echo "  [Claude Code] Setting up governance..."
 
-  # ── Preferred path (#295): install the PLUGIN. It carries the hooks,
+  # ── Preferred path: install the PLUGIN. It carries the hooks,
   #    the /cost-xray + /acp skills, AND the bundled ACP MCP server, with
   #    marketplace version tracking. Falls back to direct hook wiring on
   #    older Claude Code CLIs.
@@ -2600,8 +2600,8 @@ if [ "$HAS_CLAUDE" = true ]; then
     # Fallback for Claude Code CLIs without plugin-marketplace support:
     # direct hook wiring + user-scope MCP, exactly as before.
     #
-    # SessionStart carries the paired-arrival attestation (/govern/attest,
-    # gatewaystack-connect#595) — the mechanism that proves a hook is really
+    # SessionStart carries the paired-arrival attestation (/govern/attest)
+    # — the mechanism that proves a hook is really
     # running. Only govern.mjs 0.9.0+ has a handler for it; older copies
     # dispatch unknown events to handlePreToolUse, which would POST
     # /govern/tool-use with an undefined tool_name at every session start
@@ -2658,7 +2658,7 @@ if [ "$HAS_CLAUDE" = true ]; then
     echo "  ${C_GREEN}✓${C_RESET} [Claude Code] hooks + MCP registered directly (plugin CLI unavailable — update Claude Code for auto-updates)"
   fi
 
-  # ── Double-governance check (gatewaystack-connect#690) ───────────────
+  # ── Double-governance check ───────────────────────────
   # A machine that ran the direct-wiring path AND has the marketplace
   # plugin installed ends up with TWO PreToolUse hooks, each calling
   # /govern/tool-use on every tool call. Found in the wild 2026-08-14: a
@@ -2669,7 +2669,7 @@ if [ "$HAS_CLAUDE" = true ]; then
   #
   # We DETECT and REPORT rather than delete: hook wiring is governance
   # config, and governance changes are the operator's to make, in every
-  # direction and regardless of intent (#403). Printing the exact command
+  # direction and regardless of intent. Printing the exact command
   # is the whole job here.
   SETTINGS_HAS_HOOK=false
   if [ -f "$CLAUDE_SETTINGS" ] && grep -q "govern.mjs" "$CLAUDE_SETTINGS" 2>/dev/null; then
@@ -3487,7 +3487,7 @@ if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
     // OLD name: deprecated on npm at 0.2.1 ("Renamed to @agenticcontrolplane/opencode"),
     // so every install that registered it has been loading 0.2.1 — none of the
     // notices, local metering or the OpenCode 2.0 entry ever reached those
-    // users (gatewaystack-connect#1487). Migrate the old entry in place; keep
+    // users. Migrate the old entry in place; keep
     // the existing order and any options tuple attached to it. (No apostrophes
     // in this block: it lives inside a single-quoted node -e string.)
     const PKG = "@agenticcontrolplane/opencode";
@@ -4026,11 +4026,11 @@ if [ "$KEY_SEEN" = true ]; then
       "$INSTALLED" "$BEACON_SESSION" \
       | env ACP_CLIENT=installer node "$CONFIG_DIR/govern.mjs" >/dev/null 2>&1 || true
     echo "  ${C_GREEN}ALLOW${C_RESET}  install.verify · key valid · first governed call logged"
-    # The aha permalink (gatewaystack-connect#313): first value is a URL in
+    # The first-value permalink: first value is a URL in
     # the terminal — the governed run this install just created, by its key
     # (runKey == session_id), not a generic dashboard page.
     echo "  ${C_DIM}Your first governed run:${C_RESET} $DASHBOARD_BASE/sessions/$BEACON_SESSION"
-    # Two-plane coverage report (gatewaystack-connect#367): what this
+    # Two-plane coverage report: what this
     # workspace's traffic actually has, per client, with the exact missing
     # step — the same contract the console Coverage card renders. On a fresh
     # workspace there's only the beacon, so print the one-liner instead.
@@ -4065,7 +4065,7 @@ else
   # token and lets every call through without a policy check or an audit
   # row, and the server cannot tell that machine apart from one that never
   # installed. Saying "that's fine" here is what left real users believing
-  # they were governed while they weren't (gatewaystack-connect#594).
+  # they were governed while they weren't.
   ACP_UNGOVERNED=true
   echo "  ${C_RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
   echo "  ${C_RED}!  NOT GOVERNED YET — no API key saved${C_RESET}"
