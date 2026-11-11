@@ -207,12 +207,29 @@ ACP_PIN_AGY_REF="3fe9c68caa12ab5d37fcdc6f48ca6304cc0e04c7"
 ACP_PIN_AGY_HOOK_SHA="ef0e660b41a287f4da41a8770de757c4791dd089546f7ffbd9e85f9373acac8a"
 ACP_PIN_AGY_JSON_SHA="41b5e3b56e2d4c5f7ff221213dba96df636c5bfebeb085b42db16a23e30008ae"
 
+# Path as the node binary can open it. Under Git Bash / MSYS2 / Cygwin, node
+# is a native Windows program, and $HOME-based paths are msys paths
+# (/c/Users/me/...). The runtime's automatic argv conversion does not always
+# apply (MSYS_NO_PATHCONV, MSYS2_ARG_CONV_EXCL, MSYS-flavoured shells), and
+# when it doesn't, node resolves /c/Users/... as C:\c\Users\... and every
+# settings.json write dies. So every path handed to `node -e` goes through
+# here: cygpath -w on those shells, the path unchanged everywhere else.
+_ACP_WINPATHS=false
+case "$(uname -s 2>/dev/null)" in
+  MSYS*|MINGW*|CYGWIN*) command -v cygpath > /dev/null 2>&1 && _ACP_WINPATHS=true ;;
+esac
+_acp_np() {
+  if [ "$_ACP_WINPATHS" = true ]; then cygpath -w "$1" 2>/dev/null || printf '%s' "$1"
+  else printf '%s' "$1"
+  fi
+}
+
 # sha256 of a file on stdout; empty (and nonzero) when no tool is available.
 _acp_sha256() {
   if command -v shasum > /dev/null 2>&1; then shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1
   elif command -v sha256sum > /dev/null 2>&1; then sha256sum "$1" 2>/dev/null | cut -d' ' -f1
   elif command -v openssl > /dev/null 2>&1; then openssl dgst -sha256 "$1" 2>/dev/null | sed 's/^.*= *//'
-  elif command -v node > /dev/null 2>&1; then node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$1" 2>/dev/null
+  elif command -v node > /dev/null 2>&1; then node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$(_acp_np "$1")" 2>/dev/null
   else return 1
   fi
 }
@@ -254,7 +271,7 @@ _acp_claude_plugin_active_version() {
     const e = j && j.plugins && j.plugins["agentic-control-plane@acp"];
     const v = Array.isArray(e) ? (e.find((x) => x && x.scope === "user") || e[0] || {}).version : e && e.version;
     if (typeof v === "string" && /^\d+\.\d+\.\d+/.test(v)) process.stdout.write(v.trim());
-  ' "$HOME" 2>/dev/null
+  ' "$(_acp_np "$HOME")" 2>/dev/null
 }
 
 # Version the LOCAL marketplace clone's manifest says is current — what
@@ -274,7 +291,7 @@ _acp_claude_marketplace_version() {
       const e = (Array.isArray(m.plugins) ? m.plugins : []).find((x) => x && x.name === "agentic-control-plane");
       if (e && typeof e.version === "string" && /^\d+\.\d+\.\d+/.test(e.version)) process.stdout.write(e.version.trim());
     } catch {}
-  ' "$HOME" 2>/dev/null
+  ' "$(_acp_np "$HOME")" 2>/dev/null
 }
 
 # _acp_semver_gt A B — 0 when A is a strictly newer x.y.z than B. Non-numeric
@@ -949,7 +966,7 @@ if [ "$HAS_AGY" = true ] && [ "$LOCAL_MODE" = false ]; then
     && mkdir -p "$HOME/.acp/hooks/antigravity" "$HOME/.gemini/config" 2>/dev/null \
     && _acp_fetch_pinned "$_agy_raw/hook.mjs" "$ACP_PIN_AGY_HOOK_SHA" "$HOME/.acp/hooks/antigravity/hook.mjs" \
     && _acp_fetch_pinned "$_agy_raw/hooks/acp.json" "$ACP_PIN_AGY_JSON_SHA" "$HOME/.acp/hooks/antigravity/acp.json" \
-    && node -e 'const fs=require("fs");const p=process.env.HOME+"/.gemini/config/hooks.json";let cur={};try{cur=JSON.parse(fs.readFileSync(p,"utf8"))}catch(e){};const add=JSON.parse(fs.readFileSync(process.env.HOME+"/.acp/hooks/antigravity/acp.json","utf8"));fs.writeFileSync(p,JSON.stringify(Object.assign(cur,add),null,2))' 2>/dev/null; then
+    && HOME="$(_acp_np "$HOME")" node -e 'const fs=require("fs");const p=process.env.HOME+"/.gemini/config/hooks.json";let cur={};try{cur=JSON.parse(fs.readFileSync(p,"utf8"))}catch(e){};const add=JSON.parse(fs.readFileSync(process.env.HOME+"/.acp/hooks/antigravity/acp.json","utf8"));fs.writeFileSync(p,JSON.stringify(Object.assign(cur,add),null,2))' 2>/dev/null; then
     AGY_HOOK_OK=true
   else
     _acp_pin_warn "an Antigravity hook file" "Hook not registered."
@@ -2486,7 +2503,7 @@ acp_write_directive() {
     if (s !== -1 && e !== -1 && e > s) { let t = e + END.length; if (src[t] === "\n") t++; src = src.substring(0, s) + section + src.substring(t); }
     else { if (src && !src.endsWith("\n")) src += "\n"; src += (src ? "\n" : "") + section; }
     fs.writeFileSync(p, src);
-  ' "$_d_file" "$_d_label" "$_d_launcher" "$_d_bin" "$@"
+  ' "$(_acp_np "$_d_file")" "$_d_label" "$_d_launcher" "$_d_bin" "$@"
 }
 
 # ── Step 1a: Claude Code setup ────────────────────────────────────────
@@ -2560,7 +2577,7 @@ if [ "$HAS_CLAUDE" = true ]; then
         }
       }
       fs.writeFileSync(p, JSON.stringify(s, null, 2));
-    " "$CLAUDE_SETTINGS"
+    " "$(_acp_np "$CLAUDE_SETTINGS")"
     # The plugin bundles the ACP MCP server — drop the legacy user-scope
     # registration so the tools don't appear twice.
     CLAUDE_JSON="$HOME/.claude.json"
@@ -2571,7 +2588,7 @@ if [ "$HAS_CLAUDE" = true ]; then
         let c = {};
         try { c = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
         if (c.mcpServers && c.mcpServers.acp) { delete c.mcpServers.acp; fs.writeFileSync(p, JSON.stringify(c, null, 2)); }
-      " "$CLAUDE_JSON"
+      " "$(_acp_np "$CLAUDE_JSON")"
     fi
     # Say what happened, with the versions read back — never "auto-updating":
     # Claude Code does not auto-update a third-party marketplace plugin, and
@@ -2640,7 +2657,7 @@ if [ "$HAS_CLAUDE" = true ]; then
         if (events.includes(ev)) s.hooks[ev].push(hookEntry);
       }
       fs.writeFileSync(p, JSON.stringify(s, null, 2));
-    " "$CLAUDE_SETTINGS"
+    " "$(_acp_np "$CLAUDE_SETTINGS")"
     CLAUDE_JSON="$HOME/.claude.json"
     [ -f "$CLAUDE_JSON" ] || echo '{}' > "$CLAUDE_JSON"
     node -e "
@@ -2654,7 +2671,7 @@ if [ "$HAS_CLAUDE" = true ]; then
         args: ['-c', 'exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header \"Authorization: Bearer \$(cat ~/.acp/credentials)\"'],
       };
       fs.writeFileSync(p, JSON.stringify(c, null, 2));
-    " "$CLAUDE_JSON"
+    " "$(_acp_np "$CLAUDE_JSON")"
     echo "  ${C_GREEN}✓${C_RESET} [Claude Code] hooks + MCP registered directly (plugin CLI unavailable — update Claude Code for auto-updates)"
   fi
 
@@ -3157,7 +3174,7 @@ if [ "$HAS_QWEN" = true ]; then
     };
     if (cfg.disableAllHooks === true) console.error('  [Qwen Code] warning: disableAllHooks is true in settings.json — hooks (including ACP) will not run until it is removed.');
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
-  " "$QWEN_SETTINGS"
+  " "$(_acp_np "$QWEN_SETTINGS")"
   echo "  ${C_GREEN}✓${C_RESET} [Qwen Code] PreToolUse + PostToolUse hooks + MCP connector registered in ~/.qwen/settings.json"
   INSTALLED="${INSTALLED:+$INSTALLED, }Qwen Code"
   echo ""
@@ -3189,7 +3206,7 @@ if [ "$HAS_COPILOT" = true ]; then
       cfg.hooks[ev] = [{ type: 'command', command: cmd, timeout: 5, timeoutSec: 5 }];
     }
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
-  " "$COPILOT_HOOKS_DIR/acp.json"
+  " "$(_acp_np "$COPILOT_HOOKS_DIR/acp.json")"
   if grep -qs '"disableAllHooks"[[:space:]]*:[[:space:]]*true' "$HOME/.copilot/settings.json" 2>/dev/null; then
     echo "  ${C_DIM}[GitHub Copilot] warning: disableAllHooks is true in ~/.copilot/settings.json — hooks (including ACP) will not run until it is removed.${C_RESET}"
   fi
@@ -3227,7 +3244,7 @@ if [ "$HAS_CURSOR" = true ]; then
       cfg.hooks[ev].push(hookEntry);
     }
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
-  " "$CURSOR_HOOKS"
+  " "$(_acp_np "$CURSOR_HOOKS")"
   echo "  ${C_GREEN}✓${C_RESET} [Cursor] preToolUse + postToolUse hooks registered"
 
   # ACP introspection MCP — same mcp-remote stdio shape as Claude Code,
@@ -3245,7 +3262,7 @@ if [ "$HAS_CURSOR" = true ]; then
       args: ['-c', 'exec npx -y mcp-remote https://api.agenticcontrolplane.com/mcp --header \"Authorization: Bearer \$(cat ~/.acp/credentials)\"'],
     };
     fs.writeFileSync(p, JSON.stringify(c, null, 2));
-  " "$CURSOR_MCP"
+  " "$(_acp_np "$CURSOR_MCP")"
   echo "  ${C_GREEN}✓${C_RESET} [Cursor] ACP introspection MCP registered"
   INSTALLED="${INSTALLED:+$INSTALLED, }Cursor"
 fi
@@ -3303,7 +3320,7 @@ if [ "$HAS_CODEX" = true ]; then
     }
     if (!src.endsWith('\n')) src += '\n';
     fs.writeFileSync(p, src);
-  " "$CODEX_TOML" "$CODEX_VER"
+  " "$(_acp_np "$CODEX_TOML")" "$CODEX_VER"
 
   # Add [mcp_servers.acp] block if not present. Uses sh -c so the
   # Authorization header reads ~/.acp/credentials at runtime — no install-
@@ -3379,7 +3396,7 @@ PROVIDERBLOCK
       s.hooks[ev].push(hookEntry);
     }
     fs.writeFileSync(p, JSON.stringify(s, null, 2));
-  " "$CODEX_HOOKS"
+  " "$(_acp_np "$CODEX_HOOKS")"
 
   # Write/update ~/.codex/AGENTS.md with the ACP governance directive.
   # Codex reads AGENTS.md at every session start. The PreToolUse/PostToolUse
@@ -3524,7 +3541,7 @@ if [ "$HAS_OPENCODE" = true ] && [ "$LOCAL_MODE" = false ]; then
       };
     }
     fs.writeFileSync(p, JSON.stringify(c, null, 2));
-  ' "$OPENCODE_JSON" && {
+  ' "$(_acp_np "$OPENCODE_JSON")" && {
     echo "  ${C_GREEN}✓${C_RESET} [opencode] Plugin registered (@agenticcontrolplane/opencode) + permission gate + introspection MCP + cost X-ray provider"
     echo "     Restart opencode — it installs the plugin from npm and governs every tool call."
     INSTALLED="${INSTALLED:+$INSTALLED, }opencode"
@@ -3647,7 +3664,7 @@ EOF
         };
         fs.writeFileSync(p, JSON.stringify(c, null, 2) + "\n");
       }
-    ' "$PI_MODELS" 2>/dev/null || echo "  ${C_RED}✗${C_RESET} [pi] Could not update $PI_MODELS — add the acp provider from /integrations/pi by hand"
+    ' "$(_acp_np "$PI_MODELS")" 2>/dev/null || echo "  ${C_RED}✗${C_RESET} [pi] Could not update $PI_MODELS — add the acp provider from /integrations/pi by hand"
     PI_LAUNCH=$(cat << 'EOF'
 pi --model "acp/${ACP_PI_MODEL:-gemini-3.5-flash}" "$@"
 EOF
@@ -3985,7 +4002,7 @@ if [ -n "$DEVICE_CODE" ]; then
       }
       process.exit(1);
     })();
-  ' "$API_BASE" "$CREDS_FILE" "$DEVICE_BUDGET" "$DEVICE_INTERVAL"; then
+  ' "$API_BASE" "$(_acp_np "$CREDS_FILE")" "$DEVICE_BUDGET" "$DEVICE_INTERVAL"; then
     KEY_SEEN=true
   fi
 else

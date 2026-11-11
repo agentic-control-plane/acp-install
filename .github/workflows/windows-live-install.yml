@@ -1,0 +1,175 @@
+# Windows live install: does the installer work on a clean Windows machine?
+#
+# Each leg is a fresh windows-latest runner. It installs Node, Claude Code and
+# Codex (so the installer has harnesses to wire), pre-seeds a placeholder key
+# in ~/.acp/credentials so no login or device flow runs, then runs ONE
+# installer the way a visitor does:
+#
+#   live-ps1        Windows PowerShell 5.1 (powershell.exe, not pwsh):
+#                   irm https://agenticcontrolplane.com/install.ps1 | iex
+#   live-sh         Git Bash: curl -fsSL https://agenticcontrolplane.com/install.sh | bash
+#   live-sh-noconv  the same with MSYS_NO_PATHCONV=1, the setting that makes
+#                   Git Bash hand node raw /c/Users/... paths (the claude_code
+#                   step failure seen in install reports from MSYS_NT shells)
+#   repo-sh, repo-sh-noconv, repo-ps1
+#                   the same against this checkout's copy, so a PR tests its
+#                   own change. repo-ps1 is skipped while this repo carries no
+#                   install.ps1 mirror.
+#
+# Checks (scripts/assert-windows-install.mjs): exit 0, no "Install did not
+# finish" line, the claude_code step reported success, the existing-key finish
+# was reached (no login attempted), ~/.acp/govern.mjs exists, and
+# ~/.claude/settings.json is valid JSON that wires the ACP hook (direct
+# govern.mjs entries, or the ACP plugin enabled with its hooks.json present).
+# On failure the log and the files it inspected are uploaded as an artifact.
+#
+# ACP_NO_REPORT=1 keeps these runs out of the install-outcome beacon. The key
+# is a placeholder: nothing here talks to a real workspace.
+#
+# Live legs report on the site as deployed. On a pull request they are
+# informational (continue-on-error); the repo legs are the PR's verdict.
+# Windows minutes bill at twice the Linux rate: daily, not hourly.
+
+name: windows-live-install
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 7 * * *'
+  pull_request:
+    paths:
+      - install.sh
+      - install.ps1
+      - scripts/assert-windows-install.mjs
+      - .github/workflows/windows-live-install.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-live-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    name: ${{ matrix.leg }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    continue-on-error: ${{ matrix.source == 'live' && github.event_name == 'pull_request' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { leg: live-ps1,       source: live, installer: ps1, noconv: '' }
+          - { leg: live-sh,        source: live, installer: sh,  noconv: '' }
+          - { leg: live-sh-noconv, source: live, installer: sh,  noconv: '1' }
+          - { leg: repo-ps1,       source: repo, installer: ps1, noconv: '' }
+          - { leg: repo-sh,        source: repo, installer: sh,  noconv: '' }
+          - { leg: repo-sh-noconv, source: repo, installer: sh,  noconv: '1' }
+    env:
+      ACP_NO_REPORT: '1'
+      LEG: ${{ matrix.leg }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install harnesses (Claude Code + Codex)
+        shell: pwsh
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          claude --version
+          codex --version
+          $PSVersionTable.PSVersion | Out-String | Write-Host
+          (Get-Command powershell.exe).Source
+          New-Item -ItemType Directory -Force -Path win-logs | Out-Null
+
+      - name: Pre-seed a placeholder key (skips the device flow)
+        shell: pwsh
+        run: |
+          $acp = Join-Path $env:USERPROFILE '.acp'
+          New-Item -ItemType Directory -Force -Path $acp | Out-Null
+          [IO.File]::WriteAllText((Join-Path $acp 'credentials'), "gsk_ci_windows_placeholder_not_a_key`n")
+          $s = Join-Path $env:USERPROFILE '.claude\settings.json'
+          if (Test-Path $s) { Write-Host "::warning::~/.claude/settings.json exists before install:"; Get-Content $s }
+
+      - name: Skip repo-ps1 (no install.ps1 in this checkout)
+        if: matrix.leg == 'repo-ps1' && hashFiles('install.ps1') == ''
+        shell: pwsh
+        run: |
+          Write-Host '::notice::repo-ps1 skipped: this repo has no install.ps1 mirror yet. live-ps1 still covers the served copy.'
+          'skipped' | Set-Content win-logs/skip.txt
+
+      # --- PowerShell 5.1 -------------------------------------------------
+      # cmd, so powershell.exe gets a real NUL stdin: [Console]::IsInputRedirected
+      # is then true, which is the installer's own "no terminal" signal. iex
+      # runs the script exactly as the one-liner on the site does.
+      - name: Run install.ps1 (${{ matrix.source }}) in Windows PowerShell 5.1
+        if: matrix.installer == 'ps1' && hashFiles('win-logs/skip.txt') == ''
+        shell: cmd
+        env:
+          PS1_CMD: ${{ matrix.source == 'live' && 'irm https://agenticcontrolplane.com/install.ps1 | iex' || 'Get-Content -Raw -LiteralPath .\install.ps1 | iex' }}
+        run: |
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "%PS1_CMD%" < NUL > win-logs\install.log 2>&1
+          echo %ERRORLEVEL%> win-logs\exit-code.txt
+          type win-logs\install.log
+          exit /b 0
+
+      # --- Git Bash -------------------------------------------------------
+      - name: Run install.sh (${{ matrix.source }}) in Git Bash
+        if: matrix.installer == 'sh'
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: ${{ matrix.noconv }}
+        run: |
+          set +e
+          uname -a
+          [ -n "$MSYS_NO_PATHCONV" ] || unset MSYS_NO_PATHCONV
+          echo "MSYS_NO_PATHCONV=${MSYS_NO_PATHCONV:-<unset>}"
+          if [ "${{ matrix.source }}" = live ]; then
+            curl -fsSL https://agenticcontrolplane.com/install.sh -o win-logs/served-install.sh
+            grep -m1 '^ACP_INSTALLER_REV=' win-logs/served-install.sh
+            curl -fsSL https://agenticcontrolplane.com/install.sh | bash > win-logs/install.log 2>&1
+            code=${PIPESTATUS[1]}
+          else
+            grep -m1 '^ACP_INSTALLER_REV=' install.sh
+            bash ./install.sh < /dev/null > win-logs/install.log 2>&1
+            code=$?
+          fi
+          echo "$code" > win-logs/exit-code.txt
+          cat win-logs/install.log
+          exit 0
+
+      - name: Assert install invariants
+        if: hashFiles('win-logs/skip.txt') == ''
+        shell: bash
+        run: node scripts/assert-windows-install.mjs win-logs/install.log "$(tr -d '[:space:]' < win-logs/exit-code.txt)"
+
+      - name: Collect evidence
+        if: failure()
+        shell: pwsh
+        run: |
+          $out = 'win-logs/evidence'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $h = $env:USERPROFILE
+          foreach ($f in '.claude\settings.json', '.claude.json', '.codex\hooks.json', '.codex\config.toml', '.claude\CLAUDE.md') {
+            $p = Join-Path $h $f
+            if (Test-Path $p) { Copy-Item $p (Join-Path $out ($f -replace '[\\.]', '_')) }
+          }
+          Get-ChildItem -Recurse -Force (Join-Path $h '.acp') -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'credentials' } | Select-Object FullName, Length |
+            Out-File (Join-Path $out 'acp-tree.txt')
+          Get-ChildItem -Recurse -Force (Join-Path $h '.claude\plugins') -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length | Out-File (Join-Path $out 'claude-plugins-tree.txt')
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-install-${{ matrix.leg }}
+          path: win-logs/
+          if-no-files-found: warn
+          retention-days: 14
