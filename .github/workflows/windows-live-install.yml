@@ -11,14 +11,20 @@
 #   live-sh-noconv  the same with MSYS_NO_PATHCONV=1, the setting that makes
 #                   Git Bash hand node raw /c/Users/... paths (the claude_code
 #                   step failure seen in install reports from MSYS_NT shells)
-#   repo-sh, repo-sh-noconv, repo-ps1
+#   live-sh-msys    Git's own usr\bin\bash.exe with MSYSTEM=MSYS, so uname
+#                   reports MSYS_NT-* like the field reports (the Actions
+#                   `bash` shell is MINGW64). Argv conversion depends on the
+#                   target exe, not MSYSTEM, so this leg is the direct test
+#                   of the reported environment rather than a forced one.
+#   repo-sh, repo-sh-noconv, repo-sh-msys, repo-ps1
 #                   the same against this checkout's copy, so a PR tests its
 #                   own change. repo-ps1 is skipped while this repo carries no
 #                   install.ps1 mirror.
 #
 # Checks (scripts/assert-windows-install.mjs): exit 0, no "Install did not
 # finish" line, the claude_code step reported success, the existing-key finish
-# was reached (no login attempted), ~/.acp/govern.mjs exists, and
+# was reached (no login attempted), govern.mjs did not fall back to the
+# bundled copy, ~/.acp/govern.mjs exists, and
 # ~/.claude/settings.json is valid JSON that wires the ACP hook (direct
 # govern.mjs entries, or the ACP plugin enabled with its hooks.json present).
 # On failure the log and the files it inspected are uploaded as an artifact.
@@ -63,9 +69,11 @@ jobs:
           - { leg: live-ps1,       source: live, installer: ps1, noconv: '' }
           - { leg: live-sh,        source: live, installer: sh,  noconv: '' }
           - { leg: live-sh-noconv, source: live, installer: sh,  noconv: '1' }
+          - { leg: live-sh-msys,   source: live, installer: sh-msys, noconv: '' }
           - { leg: repo-ps1,       source: repo, installer: ps1, noconv: '' }
           - { leg: repo-sh,        source: repo, installer: sh,  noconv: '' }
           - { leg: repo-sh-noconv, source: repo, installer: sh,  noconv: '1' }
+          - { leg: repo-sh-msys,   source: repo, installer: sh-msys, noconv: '' }
     env:
       ACP_NO_REPORT: '1'
       LEG: ${{ matrix.leg }}
@@ -129,6 +137,38 @@ jobs:
           uname -a
           [ -n "$MSYS_NO_PATHCONV" ] || unset MSYS_NO_PATHCONV
           echo "MSYS_NO_PATHCONV=${MSYS_NO_PATHCONV:-<unset>}"
+          if [ "${{ matrix.source }}" = live ]; then
+            curl -fsSL https://agenticcontrolplane.com/install.sh -o win-logs/served-install.sh
+            grep -m1 '^ACP_INSTALLER_REV=' win-logs/served-install.sh
+            curl -fsSL https://agenticcontrolplane.com/install.sh | bash > win-logs/install.log 2>&1
+            code=${PIPESTATUS[1]}
+          else
+            grep -m1 '^ACP_INSTALLER_REV=' install.sh
+            bash ./install.sh < /dev/null > win-logs/install.log 2>&1
+            code=$?
+          fi
+          echo "$code" > win-logs/exit-code.txt
+          cat win-logs/install.log
+          exit 0
+
+      # --- Git's MSYS bash (MSYSTEM=MSYS, uname MSYS_NT-*) -----------------
+      # Same body as the Git Bash step, run by Git for Windows' usr\bin\bash.exe
+      # directly instead of the Actions `bash` shell (MINGW64). No profile, so
+      # PATH is the runner's (setup-node's node, Git's mingw curl).
+      - name: Run install.sh (${{ matrix.source }}) in Git's MSYS bash
+        if: matrix.installer == 'sh-msys'
+        shell: '"C:\Program Files\Git\usr\bin\bash.exe" --noprofile --norc {0}'
+        env:
+          MSYSTEM: MSYS
+        run: |
+          set +e
+          uname -a
+          case "$(uname -s)" in
+            MSYS_NT-*) echo "shell reports $(uname -s) (the field-report environment)" ;;
+            *) echo "::error::expected uname MSYS_NT-*, got $(uname -s)"; echo 1 > win-logs/exit-code.txt; : > win-logs/install.log; exit 0 ;;
+          esac
+          echo "MSYSTEM=$MSYSTEM MSYS_NO_PATHCONV=${MSYS_NO_PATHCONV:-<unset>}"
+          command -v node curl cygpath
           if [ "${{ matrix.source }}" = live ]; then
             curl -fsSL https://agenticcontrolplane.com/install.sh -o win-logs/served-install.sh
             grep -m1 '^ACP_INSTALLER_REV=' win-logs/served-install.sh
