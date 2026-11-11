@@ -41,6 +41,13 @@ if (log) {
   /keeping the existing key/.test(log) && /You're all set/.test(log)
     ? ok("finished on the existing-key path (no login attempted)")
     : bad("did not reach the existing-key finish (\"You're all set\")");
+  // The pinned govern.mjs must land. A failed pinned fetch (e.g. native curl
+  // handed an msys -o path) falls back to the bundled copy, which still
+  // passes the size check below, so the log line is the evidence.
+  const fellBack = log.split("\n").filter((l) => /using (the )?bundled copy/i.test(l));
+  fellBack.length
+    ? bad("govern.mjs fell back to the bundled copy (pinned fetch or verify failed)", fellBack.join("\n"))
+    : ok("pinned govern.mjs installed (no 'using the bundled copy' line)");
 }
 
 // 2. Hook files exist.
