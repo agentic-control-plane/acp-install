@@ -245,7 +245,7 @@ _acp_fetch_pinned() {
   _pf_url="$1"; _pf_want="$2"; _pf_dest="$3"
   ACP_PIN_FAIL="download"
   _pf_tmp="$(mktemp "$_pf_dest.XXXXXX" 2>/dev/null)" || return 1
-  if ! curl -fsSL --max-time 20 "$_pf_url" -o "$_pf_tmp" 2>/dev/null || [ ! -s "$_pf_tmp" ]; then
+  if ! curl -fsSL --max-time 20 "$_pf_url" -o "$(_acp_np "$_pf_tmp")" 2>/dev/null || [ ! -s "$_pf_tmp" ]; then
     rm -f "$_pf_tmp"; return 1
   fi
   _pf_got="$(_acp_sha256 "$_pf_tmp")"
@@ -2370,7 +2370,7 @@ ACPCLI
   # is cached into ~/.acp so removal needs no network and no docs page:
   # getting out must never depend on us being reachable. The curl is only
   # the fallback for an install that predates the cached copy.
-  curl -sf --max-time 10 "$SITE_BASE/uninstall.sh" -o "$CONFIG_DIR/uninstall.sh" 2>/dev/null || true
+  curl -sf --max-time 10 "$SITE_BASE/uninstall.sh" -o "$(_acp_np "$CONFIG_DIR/uninstall.sh")" 2>/dev/null || true
   if [ -s "$CONFIG_DIR/uninstall.sh" ] && ! grep -q 'Agentic Control Plane' "$CONFIG_DIR/uninstall.sh" 2>/dev/null; then
     rm -f "$CONFIG_DIR/uninstall.sh"
   fi
@@ -4039,14 +4039,20 @@ if [ "$KEY_SEEN" = true ]; then
     # gateway + audit log). Distinguishes "installed and idle" from "hook
     # broken" server-side, and the user's dashboard gets its first row.
     BEACON_SESSION="install-$(date +%s)"
-    printf '{"tool_name":"install.verify","tool_input":{"harness":"%s","installer":"sh"},"session_id":"%s","hook_event_name":"PreToolUse"}' \
+    # ALLOW is printed only when the hook call itself succeeded: a node
+    # that cannot open govern.mjs (e.g. an msys path under
+    # MSYS_NO_PATHCONV=1) logged nothing, so it must not claim it did.
+    if printf '{"tool_name":"install.verify","tool_input":{"harness":"%s","installer":"sh"},"session_id":"%s","hook_event_name":"PreToolUse"}' \
       "$INSTALLED" "$BEACON_SESSION" \
-      | env ACP_CLIENT=installer node "$CONFIG_DIR/govern.mjs" >/dev/null 2>&1 || true
-    echo "  ${C_GREEN}ALLOW${C_RESET}  install.verify · key valid · first governed call logged"
-    # The first-value permalink: first value is a URL in
-    # the terminal — the governed run this install just created, by its key
-    # (runKey == session_id), not a generic dashboard page.
-    echo "  ${C_DIM}Your first governed run:${C_RESET} $DASHBOARD_BASE/sessions/$BEACON_SESSION"
+      | env ACP_CLIENT=installer node "$(_acp_np "$CONFIG_DIR/govern.mjs")" >/dev/null 2>&1; then
+      echo "  ${C_GREEN}ALLOW${C_RESET}  install.verify · key valid · first governed call logged"
+      # The first-value permalink: first value is a URL in
+      # the terminal — the governed run this install just created, by its key
+      # (runKey == session_id), not a generic dashboard page.
+      echo "  ${C_DIM}Your first governed run:${C_RESET} $DASHBOARD_BASE/sessions/$BEACON_SESSION"
+    else
+      echo "  ${C_RED}!${C_RESET}  install.verify · key valid, but the first governed call through $CONFIG_DIR/govern.mjs failed — run any tool in your agent to check the hook"
+    fi
     # Two-plane coverage report: what this
     # workspace's traffic actually has, per client, with the exact missing
     # step — the same contract the console Coverage card renders. On a fresh

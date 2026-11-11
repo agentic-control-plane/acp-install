@@ -144,3 +144,37 @@ test("every path argument handed to node -e goes through _acp_np", () => {
   // The one site that reads the path from the environment instead.
   assert.match(SH, /HOME="\$\(_acp_np "\$HOME"\)" node -e 'const fs=require\("fs"\);const p=process\.env\.HOME/);
 });
+
+// Lines the installer RUNS (not `echo`ed instructions, not comments).
+const RUN_LINES = LINES.map((l, i) => ({ l, n: i + 1 })).filter(({ l }) => !/^\s*(#|echo\b)/.test(l));
+
+// Written into a generated launcher, run later by the user's shell, not by
+// the installer. Runtime paths are a separate follow-up.
+const RUNTIME_ONLY = [/^node "\$HOME\/\.acp\/bin\/acp-claude-resume\.mjs" "\$@"$/];
+
+test("every script path handed to node (node \"$X...\") goes through _acp_np", () => {
+  const bad = RUN_LINES
+    .filter(({ l }) => /\bnode "\$(?!\(_acp_np )/.test(l) && !RUNTIME_ONLY.some((re) => re.test(l.trim())))
+    .map(({ l, n }) => `line ${n}: ${l.trim()}`);
+  assert.deepEqual(bad, [], "bare path handed to node as its script (wrap it in \"$(_acp_np ...)\")");
+  // The install.verify call is one of these, and it is converted.
+  assert.match(SH, /node "\$\(_acp_np "\$CONFIG_DIR\/govern\.mjs"\)"/);
+});
+
+test("every curl -o target goes through _acp_np", () => {
+  // Native curl (Git Bash ships a mingw build) opens -o itself; /dev/null is fine.
+  const bad = RUN_LINES
+    .filter(({ l }) => /\bcurl\b/.test(l) && /\s(-o|--output)\s+"\$(?!\(_acp_np )/.test(l))
+    .map(({ l, n }) => `line ${n}: ${l.trim()}`);
+  assert.deepEqual(bad, [], "bare path handed to curl -o (wrap it in \"$(_acp_np ...)\")");
+});
+
+test("the lint catches the bare forms it is meant to catch", () => {
+  const nodeRe = /\bnode "\$(?!\(_acp_np )/;
+  const curlRe = /\s(-o|--output)\s+"\$(?!\(_acp_np )/;
+  assert.ok(nodeRe.test('  | env ACP_CLIENT=installer node "$CONFIG_DIR/govern.mjs" >/dev/null'));
+  assert.ok(!nodeRe.test('  | env ACP_CLIENT=installer node "$(_acp_np "$CONFIG_DIR/govern.mjs")" >/dev/null'));
+  assert.ok(curlRe.test('  curl -fsSL "$u" -o "$_pf_tmp" 2>/dev/null'));
+  assert.ok(!curlRe.test('  curl -fsSL "$u" -o "$(_acp_np "$_pf_tmp")" 2>/dev/null'));
+  assert.ok(!curlRe.test('  curl -s -o /dev/null -w x "$u"'));
+});
