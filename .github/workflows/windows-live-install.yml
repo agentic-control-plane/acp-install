@@ -157,7 +157,9 @@ jobs:
       # PATH is the runner's (setup-node's node, Git's mingw curl).
       - name: Run install.sh (${{ matrix.source }}) in Git's MSYS bash
         if: matrix.installer == 'sh-msys'
-        shell: '"C:\Program Files\Git\usr\bin\bash.exe" --noprofile --norc {0}'
+        # Actions can't parse a quoted custom-shell path with a space, so use
+        # the 8.3 short name of "Program Files".
+        shell: 'C:\PROGRA~1\Git\usr\bin\bash.exe --noprofile --norc {0}'
         env:
           MSYSTEM: MSYS
         run: |
