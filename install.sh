@@ -1341,8 +1341,11 @@ async function handlePreToolUse() {
       deny(`unrecognized decision "${data.decision}" — re-run the ACP installer to update this hook`);
     }
     // Grace-zone billing warning: allowed call, loud message on every one.
-    if (data.warning) {
-      process.stdout.write(JSON.stringify({ systemMessage: `⚠ ${data.warning}` }));
+    // Plus the gateway's human lines (see humanLines). One stdout JSON
+    // object per run, so they share the systemMessage.
+    const lines = humanLines(data, data.warning ? [`⚠ ${data.warning}`] : []);
+    if (lines.length) {
+      process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
     }
   } catch {
     unreachable("no response within 4s");
@@ -1443,15 +1446,38 @@ async function handlePostToolUse() {
     clearTimeout(timeout);
     if (!res.ok) { process.exit(0); }
     const data = await res.json();
-    if (data.action === "redact" || data.action === "block") {
-      process.stdout.write(JSON.stringify({
-        systemMessage: `[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`,
-      }));
+    const flagged = data.action === "redact" || data.action === "block";
+    const lines = humanLines(data, flagged
+      ? [`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`]
+      : []);
+    if (lines.length) {
+      process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
     }
   } catch {
     // silent pass-through
   } finally { clearTimeout(timeout); }
   process.exit(0);
+}
+
+// The gateway's human lines on an allowed or flagged call. `notice` is a
+// fully-formed line: what audit mode would have asked about, a cost lever,
+// or the one-time first-day receipt. `upgrade_notice` says this hook is
+// stale and how to update it. The canonical plugin prints both; this
+// fallback used to drop them, so a workspace on Cursor, Codex or Copilot
+// never heard from ACP unless a call was blocked. How often they fire is
+// capped server-side (at most 3 notices a session); this hook only prints.
+// Escape sequences and control characters never reach the terminal.
+function humanLines(data, lines) {
+  const out = lines.slice();
+  for (const key of ["notice", "upgrade_notice"]) {
+    const raw = data && typeof data[key] === "string" ? data[key] : "";
+    const clean = raw
+      .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+      .trim();
+    if (clean) out.push(clean);
+  }
+  return out;
 }
 
 const hookEvent = typeof input.hook_event_name === "string" ? input.hook_event_name : "PreToolUse";
