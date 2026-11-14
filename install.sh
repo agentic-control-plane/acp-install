@@ -1253,6 +1253,85 @@ function resolveAgentTier() {
   return "interactive";
 }
 
+// Rewrites: the gateway may answer with modified_input (Pre) or
+// modified_tool_response / modified_output (Post) when policy says to redact.
+// A harness only honours the field its own hook protocol defines, so a
+// capability is declared only where this fallback hook really applies it:
+// Claude Code (updatedInput / updatedToolOutput) and qwen-code (updatedInput).
+// Everything else (Codex, Cursor, Copilot, ...) declares nothing, and the
+// gateway then reports "detected", never "redacted". Same rules as the
+// canonical plugin hook; the line printed is the gateway's own, unless it
+// claims removal that this hook did not perform.
+const REWRITE_HARNESS = ACP_CLIENT === "claude-code-plugin" && !process.env.ACP_HARNESS ? "claude"
+  : ACP_CLIENT === "qwen-code" ? "qwen" : null;
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+function rewriteCapabilities(toolResponse) {
+  const caps = [];
+  if (REWRITE_HARNESS) caps.push("input_rewrite");
+  if (REWRITE_HARNESS === "claude" && toolResponse !== undefined && toolResponse !== null
+      && (typeof toolResponse === "object" || typeof toolResponse === "string")) caps.push("output_rewrite");
+  return caps;
+}
+// Claude Code silently ignores an updatedToolOutput that does not match the
+// tool's output schema, so a mismatched rewrite is dropped, not shipped.
+function sameShape(orig, mod) {
+  if (typeof orig === "string") return typeof mod === "string";
+  if (Array.isArray(orig)) return Array.isArray(mod);
+  if (!isPlainObject(orig) || !isPlainObject(mod)) return false;
+  const ok = Object.keys(orig), mk = Object.keys(mod);
+  if (ok.length !== mk.length || !ok.every((k) => k in mod)) return false;
+  return ok.every((k) => {
+    const a = orig[k], b = mod[k];
+    return (a === null) === (b === null) && Array.isArray(a) === Array.isArray(b) && typeof a === typeof b;
+  });
+}
+function pickInputRewrite(data, toolInput) {
+  try {
+    if (!REWRITE_HARNESS || !isPlainObject(data && data.modified_input) || !isPlainObject(toolInput)) return null;
+    if (typeof toolInput.command === "string" && typeof data.modified_input.command !== "string") return null;
+    return data.modified_input;
+  } catch { return null; }
+}
+function pickOutputRewrite(data, toolResponse) {
+  try {
+    if (REWRITE_HARNESS !== "claude") return null;
+    let cand = data && data.modified_tool_response;
+    if (cand === undefined && typeof toolResponse === "string") cand = data.modified_output;
+    if (cand === undefined || cand === null || !sameShape(toolResponse, cand)) return null;
+    return cand;
+  } catch { return null; }
+}
+function cleanLine(s) {
+  return String(s).replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim();
+}
+function piiTypesOf(data) {
+  const raw = data && data.pii && Array.isArray(data.pii.types) ? data.pii.types
+    : data && Array.isArray(data.types) ? data.types : data && Array.isArray(data.flags) ? data.flags : null;
+  if (raw) {
+    const t = raw.map((x) => cleanLine(typeof x === "string" ? x : (x && (x.type || x.name)) || "")).filter(Boolean);
+    if (t.length) return t.join(", ");
+  }
+  const m = /PII:?\s*([^.;]*)/i.exec(String((data && data.reason) || ""));
+  return m && m[1].trim() ? cleanLine(m[1]) : "";
+}
+function piiLine(data, applied) {
+  const pii = data && data.pii;
+  if (isPlainObject(pii)) {
+    const claimsRemoval = pii.action === "redacted" || pii.applied === true;
+    const t = piiTypesOf(data);
+    if (claimsRemoval && !applied) return "[ACP] PII flagged" + (t ? ": " + t : "");
+    const line = [data.notice, data.systemMessage, data.system_message].find((s) => typeof s === "string" && s.trim());
+    if (line) return cleanLine(line);
+    return "[ACP] PII " + (claimsRemoval ? "redacted" : pii.action === "blocked" ? "blocked" : "detected") + (t ? ": " + t : "");
+  }
+  // Older gateway: flags without a pii field. Never claim removal.
+  if ((data && data.action === "redact" && /PII/i.test(String(data.reason || ""))) || (data && Array.isArray(data.flags) && data.flags.length)) {
+    const t = piiTypesOf(data);
+    return "[ACP] PII flagged" + (t ? ": " + t : "");
+  }
+  return null;
+}
+
 async function handlePreToolUse() {
   const body = JSON.stringify({
     tool_name: input.tool_name,
@@ -1262,6 +1341,7 @@ async function handlePreToolUse() {
     hook_event_name: "PreToolUse",
     agent_tier: resolveAgentTier(),
     permission_mode: input.permission_mode,
+    capabilities: rewriteCapabilities(),
   });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000);
@@ -1343,9 +1423,15 @@ async function handlePreToolUse() {
     // Grace-zone billing warning: allowed call, loud message on every one.
     // Plus the gateway's human lines (see humanLines). One stdout JSON
     // object per run, so they share the systemMessage.
-    const lines = humanLines(data, data.warning ? [`⚠ ${data.warning}`] : []);
-    if (lines.length) {
-      process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
+    const rewrite = data.pii || data.modified_input !== undefined ? pickInputRewrite(data, input.tool_input) : null;
+    const piiText = data.pii || data.modified_input !== undefined ? piiLine(data, rewrite !== null) : null;
+    const lines = humanLines(piiText ? { ...data, notice: undefined } : data, data.warning ? [`⚠ ${data.warning}`] : []);
+    if (piiText) lines.push(piiText);
+    if (rewrite || lines.length) {
+      process.stdout.write(JSON.stringify({
+        ...(rewrite ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: rewrite } } : {}),
+        ...(lines.length ? { systemMessage: lines.join("\n") } : {}),
+      }));
     }
   } catch {
     unreachable("no response within 4s");
@@ -1429,10 +1515,18 @@ async function handlePostToolUse() {
   if (Buffer.byteLength(outputStr, "utf8") > POST_HOOK_PAYLOAD_CEILING) {
     outputStr = outputStr.slice(0, POST_HOOK_PAYLOAD_CEILING);
   }
+  // The structured response rides along (when it fits) so the gateway can
+  // hand back modified_tool_response in exactly this shape.
+  const rawResponse = input.tool_response;
+  const echoResponse = rawResponse !== undefined && rawResponse !== null
+    && Buffer.byteLength(JSON.stringify(rawResponse) || "", "utf8") <= POST_HOOK_PAYLOAD_CEILING
+    ? rawResponse : undefined;
   const body = JSON.stringify({
     tool_name: input.tool_name,
     tool_input: input.tool_input,
     tool_output: outputStr,
+    ...(echoResponse !== undefined ? { tool_response: echoResponse } : {}),
+    capabilities: rewriteCapabilities(echoResponse),
     session_id: input.session_id,
     cwd: input.cwd,
     hook_event_name: "PostToolUse",
@@ -1447,11 +1541,19 @@ async function handlePostToolUse() {
     if (!res.ok) { process.exit(0); }
     const data = await res.json();
     const flagged = data.action === "redact" || data.action === "block";
-    const lines = humanLines(data, flagged
-      ? [`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`]
-      : []);
-    if (lines.length) {
-      process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
+    const rewritten = echoResponse !== undefined && (data.pii || data.modified_tool_response !== undefined || data.modified_output !== undefined)
+      ? pickOutputRewrite(data, rawResponse) : null;
+    const piiText = piiLine(data, rewritten !== null);
+    const lines = piiText && data.action !== "block"
+      ? [...humanLines({ ...data, notice: undefined }, []), piiText]
+      : humanLines(data, flagged
+        ? [`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`]
+        : []);
+    if (rewritten !== null || lines.length) {
+      process.stdout.write(JSON.stringify({
+        ...(rewritten !== null ? { hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: rewritten } } : {}),
+        ...(lines.length ? { systemMessage: lines.join("\n") } : {}),
+      }));
     }
   } catch {
     // silent pass-through
