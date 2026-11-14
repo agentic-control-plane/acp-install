@@ -49,10 +49,14 @@ const CLIENTS = {
   cursor: { ACP_CLIENT: "cursor" },
   codex: { ACP_CLIENT: "codex", ACP_HARNESS: "codex" },
   copilot: { ACP_CLIENT: "copilot", ACP_HARNESS: "copilot" },
+  vscode: { ACP_CLIENT: "copilot-vscode" },
 };
+const MCP = "mcp__crm__send_note";
+const MCP_IN = { to: "crm", note: `call ${ADDR}` };
+const MCP_MOD_IN = { to: "crm", note: "call [REDACTED:email]" };
 const ORIG = { stdout: `mail ${ADDR}`, stderr: "", interrupted: false, isImage: false };
 
-function run(event, client, response, toolResponse = ORIG) {
+function run(event, client, response, { tool = "Bash", toolInput = { command: "cat people.txt" }, toolResponse = ORIG } = {}) {
   nextResponse = response;
   const home = mkdtempSync(join(tmpdir(), "acp-pii-fallback-"));
   mkdirSync(join(home, ".acp"), { recursive: true });
@@ -62,7 +66,7 @@ function run(event, client, response, toolResponse = ORIG) {
   if (!CLIENTS[client].ACP_CLIENT) delete env.ACP_CLIENT;
   if (!CLIENTS[client].ACP_HARNESS) delete env.ACP_HARNESS;
   const payload = {
-    tool_name: "Bash", tool_input: { command: "cat people.txt" }, hook_event_name: event, session_id: "s-pii",
+    tool_name: tool, tool_input: toolInput, hook_event_name: event, session_id: "s-pii",
     ...(event === "PostToolUse" ? { tool_response: toolResponse, tool_output: "x" } : {}),
   };
   return new Promise((resolve, reject) => {
@@ -79,62 +83,95 @@ function run(event, client, response, toolResponse = ORIG) {
 
 const LINE = "[ACP] Redacted 1 email address from this result.";
 const PII = { types: ["email"], count: 1, action: "redacted", applied: true };
-const MOD_IN = { command: "cat people.txt | sed s/x/[REDACTED:email]/" };
+const NEUTRAL = "[ACP] PII flagged: email";
 const MOD_OUT = { stdout: "mail [REDACTED:email]", stderr: "", interrupted: false, isImage: false };
+const pre = (extra) => ({ decision: "allow", pii: PII, notice: LINE, ...extra });
 
-test("capabilities per client (Pre and Post)", async () => {
-  const pre = { claude: ["input_rewrite"], qwen: ["input_rewrite"], cursor: [], codex: [], copilot: [] };
-  const post = { claude: ["input_rewrite", "output_rewrite"], qwen: ["input_rewrite"], cursor: [], codex: [], copilot: [] };
-  for (const c of Object.keys(CLIENTS)) {
-    assert.deepEqual((await run("PreToolUse", c, { decision: "allow" })).body.capabilities, pre[c], `pre ${c}`);
-    const p = await run("PostToolUse", c, { action: "pass" });
-    assert.deepEqual(p.body.capabilities, post[c], `post ${c}`);
-    assert.deepEqual(p.body.tool_response, ORIG);
+test("Pre capabilities: input_rewrite only for outside-party tools, per client", async () => {
+  const want = { claude: ["input_rewrite"], qwen: ["input_rewrite"], cursor: [], codex: [], copilot: [], vscode: [] };
+  for (const [c, caps] of Object.entries(want)) {
+    assert.deepEqual((await run("PreToolUse", c, { decision: "allow" }, { tool: MCP, toolInput: MCP_IN })).body.capabilities, caps, c);
+  }
+  for (const tool of ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep"]) {
+    assert.deepEqual((await run("PreToolUse", "claude", { decision: "allow" }, { tool, toolInput: { command: "x" } })).body.capabilities, [], tool);
   }
 });
 
-test("Pre: Claude Code and qwen-code apply modified_input as updatedInput + allow", async () => {
+test("a VS Code tool id reaching the fallback via Claude settings declares nothing", async () => {
+  const { body } = await run("PreToolUse", "claude", { decision: "allow" }, { tool: "run_in_terminal", toolInput: { command: "ls" } });
+  assert.deepEqual(body.capabilities, []);
+});
+
+test("Post capabilities: output_rewrite only for proven shapes on Claude Code; never input_rewrite", async () => {
+  const p = await run("PostToolUse", "claude", { action: "pass" });
+  assert.deepEqual(p.body.capabilities, ["output_rewrite"]);
+  assert.deepEqual(p.body.tool_response, ORIG);
+  const img = await run("PostToolUse", "claude", { action: "pass" }, { tool: "Read", toolResponse: { type: "image", file: { base64: "A" } } });
+  assert.deepEqual(img.body.capabilities, []);
+  for (const c of ["qwen", "cursor", "codex", "copilot", "vscode"]) {
+    assert.deepEqual((await run("PostToolUse", c, { action: "pass" })).body.capabilities, [], c);
+  }
+  const big = await run("PostToolUse", "claude", { action: "pass" }, { toolResponse: { ...ORIG, stdout: "x".repeat(300 * 1024) } });
+  assert.equal(big.body.tool_response, undefined);
+  assert.deepEqual(big.body.capabilities, []);
+});
+
+test("Pre: updatedInput is applied with NO permissionDecision (merge, same keys)", async () => {
   for (const c of ["claude", "qwen"]) {
-    const { out } = await run("PreToolUse", c, { decision: "allow", modified_input: MOD_IN, pii: PII, notice: LINE });
-    assert.equal(out.hookSpecificOutput.permissionDecision, "allow", c);
-    assert.deepEqual(out.hookSpecificOutput.updatedInput, MOD_IN, c);
+    const { out } = await run("PreToolUse", c, pre({ modified_input: MCP_MOD_IN }), { tool: MCP, toolInput: MCP_IN });
+    assert.deepEqual(out.hookSpecificOutput.updatedInput, MCP_MOD_IN, c);
+    assert.equal(out.hookSpecificOutput.permissionDecision, undefined, c);
     assert.equal(out.systemMessage, LINE, c);
   }
-});
-
-test("Pre: undeclared clients apply nothing and claim no removal; malformed input fails open", async () => {
-  for (const c of ["cursor", "codex", "copilot"]) {
-    const { out } = await run("PreToolUse", c, { decision: "allow", modified_input: MOD_IN, pii: PII, notice: LINE });
-    assert.equal(out.hookSpecificOutput, undefined, c);
-    assert.equal(out.systemMessage, "[ACP] PII flagged: email", c);
+  for (const bad of [{ to: "crm" }, { ...MCP_MOD_IN, extra: 1 }, { to: "crm", note: 5 }]) {
+    const { out } = await run("PreToolUse", "claude", pre({ modified_input: bad }), { tool: MCP, toolInput: MCP_IN });
+    assert.equal(out.hookSpecificOutput, undefined);
+    assert.equal(out.systemMessage, NEUTRAL);
   }
-  const { out } = await run("PreToolUse", "claude", { decision: "allow", modified_input: { command: 1 }, pii: PII, notice: LINE });
-  assert.equal(out.hookSpecificOutput, undefined);
-  assert.equal(out.systemMessage, "[ACP] PII flagged: email");
 });
 
-test("Post: Claude Code gets updatedToolOutput in the original shape", async () => {
+test("Pre: Bash is never rewritten; undeclared clients apply nothing and claim no removal", async () => {
+  const b = await run("PreToolUse", "claude", pre({ modified_input: { command: "echo" } }));
+  assert.equal(b.out.hookSpecificOutput, undefined);
+  assert.equal(b.out.systemMessage, NEUTRAL);
+  for (const c of ["cursor", "codex", "copilot", "vscode"]) {
+    const { out } = await run("PreToolUse", c, pre({ modified_input: MCP_MOD_IN }), { tool: MCP, toolInput: MCP_IN });
+    assert.equal(out.hookSpecificOutput, undefined, c);
+    assert.equal(out.systemMessage, NEUTRAL, c);
+  }
+});
+
+test("Pre: a throwing PII line never becomes an outage deny", async () => {
+  const { out } = await run("PreToolUse", "claude", { decision: "allow", pii: { types: [{ toString() { throw new Error("x"); } }], action: "redacted" }, notice: { bad: 1 } });
+  assert.ok(!out || !JSON.stringify(out).includes("deny"));
+});
+
+test("Post: Claude Code gets updatedToolOutput in the original shape (deep)", async () => {
   const { out } = await run("PostToolUse", "claude", { action: "redact", pii: PII, notice: LINE, modified_tool_response: MOD_OUT });
   assert.deepEqual(out.hookSpecificOutput, { hookEventName: "PostToolUse", updatedToolOutput: MOD_OUT });
   assert.equal(out.systemMessage, LINE);
   const arr = [{ type: "text", text: "c [REDACTED:email]" }];
-  const a = await run("PostToolUse", "claude", { action: "redact", pii: PII, notice: LINE, modified_tool_response: arr }, [{ type: "text", text: `c ${ADDR}` }]);
+  const a = await run("PostToolUse", "claude", { action: "redact", pii: PII, notice: LINE, modified_tool_response: arr }, { tool: MCP, toolResponse: [{ type: "text", text: `c ${ADDR}` }] });
   assert.deepEqual(a.out.hookSpecificOutput.updatedToolOutput, arr);
 });
 
-test("Post: a schema-mismatched rewrite is dropped and no removal is claimed", async () => {
-  for (const bad of [{ stdout: "x" }, "mail [REDACTED:email]", { ...MOD_OUT, interrupted: "no" }]) {
+test("Post: a mismatch at any depth is dropped and no removal is claimed", async () => {
+  for (const bad of [{ stdout: "x" }, "mail", { ...MOD_OUT, interrupted: "no" }, { ...MOD_OUT, extra: {} }]) {
     const { out } = await run("PostToolUse", "claude", { action: "redact", pii: PII, notice: LINE, modified_tool_response: bad });
     assert.equal(out.hookSpecificOutput, undefined);
-    assert.equal(out.systemMessage, "[ACP] PII flagged: email");
+    assert.equal(out.systemMessage, NEUTRAL);
+  }
+  for (const bad of [[{ type: "text", text: 7 }], [{ type: "text" }], []]) {
+    const { out } = await run("PostToolUse", "claude", { action: "redact", pii: PII, notice: LINE, modified_tool_response: bad }, { tool: MCP, toolResponse: [{ type: "text", text: `c ${ADDR}` }] });
+    assert.equal(out.hookSpecificOutput, undefined, JSON.stringify(bad));
   }
 });
 
-test("Post: no output rewrite for qwen-code, Codex, Cursor, Copilot", async () => {
-  for (const c of ["qwen", "codex", "cursor", "copilot"]) {
+test("Post: no output rewrite for qwen-code, Codex, Cursor, Copilot, VS Code", async () => {
+  for (const c of ["qwen", "codex", "cursor", "copilot", "vscode"]) {
     const { out } = await run("PostToolUse", c, { action: "redact", pii: PII, notice: LINE, modified_tool_response: MOD_OUT });
     assert.equal(out.hookSpecificOutput, undefined, c);
-    assert.equal(out.systemMessage, "[ACP] PII flagged: email", c);
+    assert.equal(out.systemMessage, NEUTRAL, c);
   }
 });
 

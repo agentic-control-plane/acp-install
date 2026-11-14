@@ -1262,39 +1262,63 @@ function resolveAgentTier() {
 // gateway then reports "detected", never "redacted". Same rules as the
 // canonical plugin hook; the line printed is the gateway's own, unless it
 // claims removal that this hook did not perform.
-const REWRITE_HARNESS = ACP_CLIENT === "claude-code-plugin" && !process.env.ACP_HARNESS ? "claude"
+// VS Code's agent mode can reach this hook through ~/.claude/settings.json;
+// its dialect drops these fields, so it declares nothing.
+const VSCODE_ONLY_TOOLS = ["run_in_terminal", "runTerminalCommand", "replace_string_in_file",
+  "multi_replace_string_in_file", "insert_edit_into_file", "edit_files", "editFiles", "createFile",
+  "runSubagent", "search_subagent", "execution_subagent"];
+const IS_VSCODE = ACP_CLIENT === "copilot-vscode" || VSCODE_ONLY_TOOLS.includes(input && input.tool_name);
+const REWRITE_HARNESS = IS_VSCODE ? null
+  : ACP_CLIENT === "claude-code-plugin" && !process.env.ACP_HARNESS ? "claude"
   : ACP_CLIENT === "qwen-code" ? "qwen" : null;
 const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-function rewriteCapabilities(toolResponse) {
+// Input rewrite only for tools whose input goes to an outside party; never
+// for commands or file tools (the block policy covers those).
+const inputRewriteTool = (n) => typeof n === "string" && (/^mcp__/.test(n) || n === "WebFetch" || n === "WebSearch");
+// Output rewrite only for response shapes proven against real Claude Code.
+function outputRewriteProven(n, r) {
+  if (n === "Bash") return isPlainObject(r) && typeof r.stdout === "string";
+  if (n === "Read") return isPlainObject(r) && r.type === "text" && isPlainObject(r.file) && typeof r.file.content === "string";
+  if (typeof n === "string" && /^mcp__/.test(n)) {
+    return typeof r === "string" || (Array.isArray(r) && r.length > 0 && r.every((b) => isPlainObject(b) && b.type === "text" && typeof b.text === "string"));
+  }
+  return false;
+}
+function rewriteCapabilities(toolName, toolResponse, phase) {
   const caps = [];
-  if (REWRITE_HARNESS) caps.push("input_rewrite");
-  if (REWRITE_HARNESS === "claude" && toolResponse !== undefined && toolResponse !== null
-      && (typeof toolResponse === "object" || typeof toolResponse === "string")) caps.push("output_rewrite");
+  if (!REWRITE_HARNESS) return caps;
+  if (phase !== "post" && inputRewriteTool(toolName)) caps.push("input_rewrite");
+  if (phase === "post" && REWRITE_HARNESS === "claude" && toolResponse !== undefined && toolResponse !== null
+      && outputRewriteProven(toolName, toolResponse)) caps.push("output_rewrite");
   return caps;
 }
-// Claude Code silently ignores an updatedToolOutput that does not match the
-// tool's output schema, so a mismatched rewrite is dropped, not shipped.
+// Deep structural match (keys, types, array lengths, recursing). Claude Code
+// silently ignores an updatedToolOutput that does not match the tool's
+// output schema, so a mismatch anywhere is dropped, not shipped.
 function sameShape(orig, mod) {
-  if (typeof orig === "string") return typeof mod === "string";
-  if (Array.isArray(orig)) return Array.isArray(mod);
-  if (!isPlainObject(orig) || !isPlainObject(mod)) return false;
+  if (orig === null || mod === null) return orig === mod;
+  if (typeof orig !== typeof mod) return false;
+  if (Array.isArray(orig) || Array.isArray(mod)) {
+    return Array.isArray(orig) && Array.isArray(mod) && orig.length === mod.length && orig.every((x, i) => sameShape(x, mod[i]));
+  }
+  if (typeof orig !== "object") return true;
   const ok = Object.keys(orig), mk = Object.keys(mod);
-  if (ok.length !== mk.length || !ok.every((k) => k in mod)) return false;
-  return ok.every((k) => {
-    const a = orig[k], b = mod[k];
-    return (a === null) === (b === null) && Array.isArray(a) === Array.isArray(b) && typeof a === typeof b;
-  });
+  return ok.length === mk.length && ok.every((k) => k in mod && sameShape(orig[k], mod[k]));
 }
-function pickInputRewrite(data, toolInput) {
+function pickInputRewrite(data, toolName, toolInput) {
   try {
-    if (!REWRITE_HARNESS || !isPlainObject(data && data.modified_input) || !isPlainObject(toolInput)) return null;
-    if (typeof toolInput.command === "string" && typeof data.modified_input.command !== "string") return null;
-    return data.modified_input;
+    if (!rewriteCapabilities(toolName).includes("input_rewrite")) return null;
+    if (!isPlainObject(data && data.modified_input) || !isPlainObject(toolInput)) return null;
+    const mod = data.modified_input;
+    const a = Object.keys(toolInput).sort(), b = Object.keys(mod).sort();
+    if (a.length !== b.length || a.some((k, i) => k !== b[i])) return null;
+    if (!b.every((k) => typeof mod[k] === typeof toolInput[k] && Array.isArray(mod[k]) === Array.isArray(toolInput[k]))) return null;
+    return { ...toolInput, ...mod };
   } catch { return null; }
 }
-function pickOutputRewrite(data, toolResponse) {
+function pickOutputRewrite(data, toolName, toolResponse) {
   try {
-    if (REWRITE_HARNESS !== "claude") return null;
+    if (!rewriteCapabilities(toolName, toolResponse, "post").includes("output_rewrite")) return null;
     let cand = data && data.modified_tool_response;
     if (cand === undefined && typeof toolResponse === "string") cand = data.modified_output;
     if (cand === undefined || cand === null || !sameShape(toolResponse, cand)) return null;
@@ -1341,7 +1365,7 @@ async function handlePreToolUse() {
     hook_event_name: "PreToolUse",
     agent_tier: resolveAgentTier(),
     permission_mode: input.permission_mode,
-    capabilities: rewriteCapabilities(),
+    capabilities: rewriteCapabilities(input.tool_name),
   });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000);
@@ -1423,13 +1447,19 @@ async function handlePreToolUse() {
     // Grace-zone billing warning: allowed call, loud message on every one.
     // Plus the gateway's human lines (see humanLines). One stdout JSON
     // object per run, so they share the systemMessage.
-    const rewrite = data.pii || data.modified_input !== undefined ? pickInputRewrite(data, input.tool_input) : null;
-    const piiText = data.pii || data.modified_input !== undefined ? piiLine(data, rewrite !== null) : null;
+    // A PII line that throws must never become an outage deny: fail open, silent.
+    let rewrite = null, piiText = null;
+    try {
+      if (data.pii || data.modified_input !== undefined) {
+        rewrite = pickInputRewrite(data, input.tool_name, input.tool_input);
+        piiText = piiLine(data, rewrite !== null);
+      }
+    } catch { /* original passes through */ }
     const lines = humanLines(piiText ? { ...data, notice: undefined } : data, data.warning ? [`⚠ ${data.warning}`] : []);
     if (piiText) lines.push(piiText);
     if (rewrite || lines.length) {
       process.stdout.write(JSON.stringify({
-        ...(rewrite ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: rewrite } } : {}),
+        ...(rewrite ? { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: rewrite } } : {}),
         ...(lines.length ? { systemMessage: lines.join("\n") } : {}),
       }));
     }
@@ -1526,7 +1556,7 @@ async function handlePostToolUse() {
     tool_input: input.tool_input,
     tool_output: outputStr,
     ...(echoResponse !== undefined ? { tool_response: echoResponse } : {}),
-    capabilities: rewriteCapabilities(echoResponse),
+    capabilities: rewriteCapabilities(input.tool_name, echoResponse, "post"),
     session_id: input.session_id,
     cwd: input.cwd,
     hook_event_name: "PostToolUse",
@@ -1542,8 +1572,9 @@ async function handlePostToolUse() {
     const data = await res.json();
     const flagged = data.action === "redact" || data.action === "block";
     const rewritten = echoResponse !== undefined && (data.pii || data.modified_tool_response !== undefined || data.modified_output !== undefined)
-      ? pickOutputRewrite(data, rawResponse) : null;
-    const piiText = piiLine(data, rewritten !== null);
+      ? pickOutputRewrite(data, input.tool_name, rawResponse) : null;
+    let piiText = null;
+    try { piiText = piiLine(data, rewritten !== null); } catch { /* fail open, silent */ }
     const lines = piiText && data.action !== "block"
       ? [...humanLines({ ...data, notice: undefined }, []), piiText]
       : humanLines(data, flagged
