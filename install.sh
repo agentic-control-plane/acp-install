@@ -194,8 +194,8 @@ fi
 # release (or `acp-update`, which re-runs this installer), not on every push.
 ACP_PIN_GOVERN_REPO="claude-code-acp-plugin"
 # Plugin 0.30.1 (main 8f354ac5): honours ~/.acp/failmode; includes 0.30.0 headless holds.
-ACP_PIN_GOVERN_REF="8f354ac5345f9d2f48382491895efe566df97690"
-ACP_PIN_GOVERN_SHA="a896e8e24f337ac41d6fa1104aa29cb3e8d94ae001b72902ad2c87c78ce1a301"
+ACP_PIN_GOVERN_REF="8e523b71750ec9cc996c016e398469c250cc58cf"
+ACP_PIN_GOVERN_SHA="3f20c23c07facdbda2661c63a96d848f130531e8b0b8ec7d4d7f9f6b1e82e0a1"
 ACP_PIN_PI_REF="e27c427621c6a6c4948e95ca87cfd2c97c27c20d"
 ACP_PIN_PI_INDEX_SHA="cf8c50c0ed57c596f965be1a3f8a958d9a8b9b0dc9f8e1377e4286ca39e127c1"
 ACP_PIN_PRIME_REF="4043829b9acdaa2d258ca5237166fcc7910bfd14"
